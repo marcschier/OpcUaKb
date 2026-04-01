@@ -2,6 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/OpcUaKb.Crawler/OpcUaKb.Crawler.csproj" />
     <Project Path="src/OpcUaKb.Indexer/OpcUaKb.Indexer.csproj" />
+    <Project Path="src/OpcUaKb.Pipeline/OpcUaKb.Pipeline.csproj" />
     <Project Path="src/OpcUaKb.Setup/OpcUaKb.Setup.csproj" />
     <Project Path="src/OpcUaKb.Test/OpcUaKb.Test.csproj" />
   </Folder>
