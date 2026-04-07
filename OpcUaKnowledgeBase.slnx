@@ -1,5 +1,6 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/OpcUaKb.Chat/OpcUaKb.Chat.csproj" />
     <Project Path="src/OpcUaKb.Crawler/OpcUaKb.Crawler.csproj" />
     <Project Path="src/OpcUaKb.Indexer/OpcUaKb.Indexer.csproj" />
     <Project Path="src/OpcUaKb.Pipeline/OpcUaKb.Pipeline.csproj" />
