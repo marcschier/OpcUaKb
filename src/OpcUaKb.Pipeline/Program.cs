@@ -20,11 +20,16 @@ using Microsoft.Extensions.Logging;
 // ═══════════════════════════════════════════════════════════════════════
 // OPC UA Knowledge Base Pipeline — Crawl + Index
 // Designed to run as an Azure Container Apps scheduled job.
+// Emits structured JSON telemetry for Log Analytics dashboard.
 // ═══════════════════════════════════════════════════════════════════════
 
 using var loggerFactory = LoggerFactory.Create(b =>
 {
-    b.AddSimpleConsole(o => { o.SingleLine = true; o.TimestampFormat = "HH:mm:ss "; });
+    b.AddJsonConsole(o =>
+    {
+        o.TimestampFormat = "yyyy-MM-ddTHH:mm:ss.fffZ";
+        o.UseUtcTimestamp = true;
+    });
     b.SetMinimumLevel(LogLevel.Information);
 });
 var log = loggerFactory.CreateLogger("Pipeline");
@@ -35,27 +40,131 @@ var searchApiKey   = Require("SEARCH_API_KEY");
 var aoaiEndpoint   = Require("AOAI_ENDPOINT");
 var aoaiApiKey     = Require("AOAI_API_KEY");
 
+var statusTracker = new PipelineStatusTracker(
+    new BlobContainerClient(storageConnStr, "opcua-content"),
+    loggerFactory.CreateLogger<PipelineStatusTracker>());
+
 var sw = Stopwatch.StartNew();
+var exitCode = 0;
 
-// ── Phase 1: Crawl ─────────────────────────────────────────────────────
-log.LogInformation("═══ Phase 1: Crawl ═══");
-var crawler = new OpcUaCrawler(storageConnStr, loggerFactory.CreateLogger<OpcUaCrawler>());
-await crawler.RunAsync();
-log.LogInformation("Crawl completed in {Elapsed}", sw.Elapsed);
+try
+{
+    // ── Phase 1: Crawl ─────────────────────────────────────────────────
+    log.LogInformation("[PIPELINE] Phase={Phase} Status={Status}", "crawl", "started");
+    await statusTracker.UpdateAsync("crawl", "running");
 
-// ── Phase 2: Index ─────────────────────────────────────────────────────
-log.LogInformation("═══ Phase 2: Index ═══");
-var indexer = new OpcUaIndexer(
-    storageConnStr, searchEndpoint, searchApiKey,
-    aoaiEndpoint, aoaiApiKey,
-    loggerFactory.CreateLogger<OpcUaIndexer>());
-await indexer.RunAsync();
-log.LogInformation("Pipeline completed in {Elapsed}", sw.Elapsed);
-return 0;
+    var crawler = new OpcUaCrawler(storageConnStr, loggerFactory.CreateLogger<OpcUaCrawler>(), statusTracker);
+    await crawler.RunAsync();
+
+    log.LogInformation("[PIPELINE] Phase={Phase} Status={Status} ElapsedSec={Elapsed}",
+        "crawl", "completed", (int)sw.Elapsed.TotalSeconds);
+    await statusTracker.UpdateAsync("crawl", "completed", elapsedSec: (int)sw.Elapsed.TotalSeconds);
+
+    // ── Phase 2: Index ─────────────────────────────────────────────────
+    log.LogInformation("[PIPELINE] Phase={Phase} Status={Status}", "index", "started");
+    await statusTracker.UpdateAsync("index", "running");
+
+    var indexSw = Stopwatch.StartNew();
+    var indexer = new OpcUaIndexer(
+        storageConnStr, searchEndpoint, searchApiKey,
+        aoaiEndpoint, aoaiApiKey,
+        loggerFactory.CreateLogger<OpcUaIndexer>(), statusTracker);
+    await indexer.RunAsync();
+
+    log.LogInformation("[PIPELINE] Phase={Phase} Status={Status} ElapsedSec={Elapsed}",
+        "index", "completed", (int)indexSw.Elapsed.TotalSeconds);
+    await statusTracker.UpdateAsync("index", "completed",
+        elapsedSec: (int)indexSw.Elapsed.TotalSeconds);
+
+    log.LogInformation("[PIPELINE] Phase={Phase} Status={Status} TotalElapsedSec={Elapsed}",
+        "pipeline", "completed", (int)sw.Elapsed.TotalSeconds);
+    await statusTracker.UpdateAsync("pipeline", "completed",
+        elapsedSec: (int)sw.Elapsed.TotalSeconds);
+}
+catch (Exception ex)
+{
+    log.LogError(ex, "[PIPELINE] Phase={Phase} Status={Status} Error={Error}",
+        statusTracker.CurrentPhase, "failed", ex.Message);
+    await statusTracker.UpdateAsync(statusTracker.CurrentPhase, "failed", error: ex.Message);
+    exitCode = 1;
+}
+
+return exitCode;
 
 string Require(string name) =>
     Environment.GetEnvironmentVariable(name)
     ?? throw new InvalidOperationException($"Missing environment variable: {name}");
+
+// ═══════════════════════════════════════════════════════════════════════
+// Pipeline Status Tracker — writes _pipeline-status.json to blob storage
+// ═══════════════════════════════════════════════════════════════════════
+
+sealed class PipelineStatusTracker
+{
+    static readonly JsonSerializerOptions s_json = new() { WriteIndented = true };
+    readonly BlobContainerClient _container;
+    readonly ILogger _log;
+    PipelineStatus _status = new();
+
+    public string CurrentPhase => _status.CurrentPhase;
+
+    public PipelineStatusTracker(BlobContainerClient container, ILogger logger)
+    {
+        _container = container;
+        _log = logger;
+    }
+
+    public async Task UpdateAsync(string phase, string status,
+        int? downloaded = null, int? skipped = null, int? errors = null,
+        int? queued = null, int? htmlBlobs = null, int? chunks = null,
+        int? embedded = null, int? indexed = null,
+        int? elapsedSec = null, string? error = null)
+    {
+        _status.CurrentPhase = phase;
+        _status.Status = status;
+        _status.LastUpdated = DateTimeOffset.UtcNow;
+        if (downloaded.HasValue) _status.CrawlDownloaded = downloaded.Value;
+        if (skipped.HasValue) _status.CrawlSkipped = skipped.Value;
+        if (errors.HasValue) _status.CrawlErrors = errors.Value;
+        if (queued.HasValue) _status.CrawlQueued = queued.Value;
+        if (htmlBlobs.HasValue) _status.IndexHtmlBlobs = htmlBlobs.Value;
+        if (chunks.HasValue) _status.IndexChunks = chunks.Value;
+        if (embedded.HasValue) _status.IndexEmbedded = embedded.Value;
+        if (indexed.HasValue) _status.IndexUploaded = indexed.Value;
+        if (elapsedSec.HasValue) _status.ElapsedSeconds = elapsedSec.Value;
+        if (error != null) _status.LastError = error;
+
+        try
+        {
+            await _container.CreateIfNotExistsAsync();
+            var blob = _container.GetBlobClient("_pipeline-status.json");
+            var json = JsonSerializer.SerializeToUtf8Bytes(_status, s_json);
+            using var ms = new MemoryStream(json);
+            await blob.UploadAsync(ms, overwrite: true);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning("Could not write status: {Msg}", ex.Message);
+        }
+    }
+}
+
+sealed class PipelineStatus
+{
+    public string CurrentPhase { get; set; } = "init";
+    public string Status { get; set; } = "pending";
+    public DateTimeOffset LastUpdated { get; set; } = DateTimeOffset.UtcNow;
+    public int ElapsedSeconds { get; set; }
+    public int CrawlDownloaded { get; set; }
+    public int CrawlSkipped { get; set; }
+    public int CrawlErrors { get; set; }
+    public int CrawlQueued { get; set; }
+    public int IndexHtmlBlobs { get; set; }
+    public int IndexChunks { get; set; }
+    public int IndexEmbedded { get; set; }
+    public int IndexUploaded { get; set; }
+    public string? LastError { get; set; }
+}
 
 // ═══════════════════════════════════════════════════════════════════════
 // Crawler
@@ -80,12 +189,14 @@ sealed class OpcUaCrawler : IDisposable
     readonly SemaphoreSlim _throttle = new(MaxConcurrency);
     readonly ConcurrentDictionary<string, byte> _queued = new(StringComparer.OrdinalIgnoreCase);
     readonly ILogger _log;
+    readonly PipelineStatusTracker _tracker;
     Dictionary<string, DateTimeOffset> _crawled = new(StringComparer.OrdinalIgnoreCase);
     int _downloaded, _skipped, _errors;
 
-    public OpcUaCrawler(string connectionString, ILogger logger)
+    public OpcUaCrawler(string connectionString, ILogger logger, PipelineStatusTracker tracker)
     {
         _log = logger;
+        _tracker = tracker;
         _container = new BlobContainerClient(connectionString, ContainerName);
         var handler = new SocketsHttpHandler
         {
@@ -120,7 +231,10 @@ sealed class OpcUaCrawler : IDisposable
         }
 
         await SaveStateAsync();
-        _log.LogInformation("Crawl done — Downloaded:{D} Skipped:{S} Errors:{E}", _downloaded, _skipped, _errors);
+        _log.LogInformation("[CRAWL] Status=completed Downloaded={D} Skipped={S} Errors={E}",
+            _downloaded, _skipped, _errors);
+        await _tracker.UpdateAsync("crawl", "completed",
+            downloaded: _downloaded, skipped: _skipped, errors: _errors, queued: 0);
     }
 
     async Task ProcessAsync(string url, bool isPage, ConcurrentQueue<(string, bool)> queue)
@@ -166,12 +280,18 @@ sealed class OpcUaCrawler : IDisposable
             }
 
             if (_downloaded % 25 == 0)
-                _log.LogInformation("Progress: {D} downloaded, {S} skipped, {E} errors, {Q} queued",
+            {
+                _log.LogInformation("[CRAWL] Downloaded={D} Skipped={S} Errors={E} Queued={Q}",
                     _downloaded, _skipped, _errors, queue.Count);
+                if (_downloaded % 100 == 0)
+                    await _tracker.UpdateAsync("crawl", "running",
+                        downloaded: _downloaded, skipped: _skipped,
+                        errors: _errors, queued: queue.Count);
+            }
         }
         catch (Exception ex)
         {
-            _log.LogWarning("Error crawling {Url}: {Msg}", url, ex.Message);
+            _log.LogWarning("[CRAWL] Error={Error} Url={Url}", ex.Message, url);
             Interlocked.Increment(ref _errors);
         }
         finally
@@ -276,11 +396,13 @@ sealed class OpcUaIndexer
     readonly HttpClient _http;
     readonly string _aoaiEndpoint;
     readonly ILogger _log;
+    readonly PipelineStatusTracker _tracker;
 
     public OpcUaIndexer(string storageConn, string searchEndpoint, string searchApiKey,
-        string aoaiEndpoint, string aoaiApiKey, ILogger logger)
+        string aoaiEndpoint, string aoaiApiKey, ILogger logger, PipelineStatusTracker tracker)
     {
         _log = logger;
+        _tracker = tracker;
         _aoaiEndpoint = aoaiEndpoint;
         _indexClient = new SearchIndexClient(new Uri(searchEndpoint), new AzureKeyCredential(searchApiKey));
         _searchClient = _indexClient.GetSearchClient(IndexName);
@@ -292,7 +414,7 @@ sealed class OpcUaIndexer
     public async Task RunAsync()
     {
         await EnsureIndexAsync();
-        _log.LogInformation("Index '{Name}' ready", IndexName);
+        _log.LogInformation("[INDEX] Status=index_ready Index={Name}", IndexName);
 
         var htmlBlobs = new List<string>();
         await foreach (var item in _container.GetBlobsAsync())
@@ -300,7 +422,8 @@ sealed class OpcUaIndexer
             if (item.Name.EndsWith(".html", StringComparison.OrdinalIgnoreCase))
                 htmlBlobs.Add(item.Name);
         }
-        _log.LogInformation("Found {Count} HTML blobs", htmlBlobs.Count);
+        _log.LogInformation("[INDEX] HtmlBlobs={Count}", htmlBlobs.Count);
+        await _tracker.UpdateAsync("index", "running", htmlBlobs: htmlBlobs.Count);
         if (htmlBlobs.Count == 0) return;
 
         var allDocs = new List<SearchDocument>();
@@ -320,17 +443,23 @@ sealed class OpcUaIndexer
                 allDocs.AddRange(ChunkDocument(doc, part, ver, sourceUrl));
 
                 if (processed % 50 == 0)
-                    _log.LogInformation("Parsed {N}/{T} blobs, {C} chunks so far", processed, htmlBlobs.Count, allDocs.Count);
+                {
+                    _log.LogInformation("[INDEX] Phase=chunking Parsed={N} Total={T} Chunks={C}",
+                        processed, htmlBlobs.Count, allDocs.Count);
+                    await _tracker.UpdateAsync("index", "running",
+                        htmlBlobs: htmlBlobs.Count, chunks: allDocs.Count);
+                }
             }
             catch (Exception ex)
             {
-                _log.LogWarning("Error processing {Blob}: {Msg}", blobName, ex.Message);
+                _log.LogWarning("[INDEX] Phase=chunking Error={Error} Blob={Blob}", ex.Message, blobName);
             }
         }
-        _log.LogInformation("Generated {Count} chunks from {Pages} pages", allDocs.Count, htmlBlobs.Count);
+        _log.LogInformation("[INDEX] Phase=chunking Status=completed Chunks={Count}", allDocs.Count);
+        await _tracker.UpdateAsync("index", "running", chunks: allDocs.Count);
 
         // Embeddings
-        _log.LogInformation("Generating embeddings...");
+        _log.LogInformation("[INDEX] Phase=embedding Total={Count}", allDocs.Count);
         var sem = new SemaphoreSlim(5);
         int embDone = 0;
         for (int i = 0; i < allDocs.Count; i += EmbeddingBatchSize)
@@ -345,13 +474,22 @@ sealed class OpcUaIndexer
                     batch[j]["page_chunk_vector"] = vectors[j];
                 embDone += batch.Count;
                 if (embDone % 100 == 0)
-                    _log.LogInformation("Embedded {N}/{T}", embDone, allDocs.Count);
+                {
+                    _log.LogInformation("[INDEX] Phase=embedding Embedded={N} Total={T}", embDone, allDocs.Count);
+                    await _tracker.UpdateAsync("index", "running", embedded: embDone);
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.LogWarning("[INDEX] Phase=embedding Error={Error} BatchStart={I}", ex.Message, i);
             }
             finally { sem.Release(); }
         }
+        _log.LogInformation("[INDEX] Phase=embedding Status=completed Embedded={N}", embDone);
+        await _tracker.UpdateAsync("index", "running", embedded: embDone);
 
         // Upload
-        _log.LogInformation("Uploading to search index...");
+        _log.LogInformation("[INDEX] Phase=upload Total={Count}", allDocs.Count);
         int uploaded = 0;
         for (int i = 0; i < allDocs.Count; i += UploadBatchSize)
         {
@@ -361,14 +499,18 @@ sealed class OpcUaIndexer
                 await _searchClient.IndexDocumentsAsync(IndexDocumentsBatch.Upload(batch));
                 uploaded += batch.Count;
                 if (uploaded % 500 == 0)
-                    _log.LogInformation("Uploaded {N}/{T}", uploaded, allDocs.Count);
+                {
+                    _log.LogInformation("[INDEX] Phase=upload Uploaded={N} Total={T}", uploaded, allDocs.Count);
+                    await _tracker.UpdateAsync("index", "running", indexed: uploaded);
+                }
             }
             catch (Exception ex)
             {
-                _log.LogWarning("Upload error at {I}: {Msg}", i, ex.Message);
+                _log.LogWarning("[INDEX] Phase=upload Error={Error} BatchStart={I}", ex.Message, i);
             }
         }
-        _log.LogInformation("Indexed {N} documents", uploaded);
+        _log.LogInformation("[INDEX] Phase=upload Status=completed Indexed={N}", uploaded);
+        await _tracker.UpdateAsync("index", "completed", indexed: uploaded);
     }
 
     async Task EnsureIndexAsync()
