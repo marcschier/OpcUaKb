@@ -61,10 +61,10 @@ sealed class OpcUaNodeSetParser
         await foreach (var item in _container.GetBlobsAsync())
         {
             var name = item.Name;
-            // Match: *.xml files with "nodeset" in path, OR api/nodesets/*.xml files
-            if (name.EndsWith(".xml", StringComparison.OrdinalIgnoreCase)
-                && (name.Contains("nodeset", StringComparison.OrdinalIgnoreCase)
-                    || name.Contains("api/nodesets", StringComparison.OrdinalIgnoreCase)))
+            // Match: *.xml files with "nodeset" in path, OR api/nodesets/ blobs (XML content, may lack extension)
+            if (name.StartsWith("api/nodesets/", StringComparison.OrdinalIgnoreCase)
+                || (name.EndsWith(".xml", StringComparison.OrdinalIgnoreCase)
+                    && name.Contains("nodeset", StringComparison.OrdinalIgnoreCase)))
             {
                 blobNames.Add(name);
             }
