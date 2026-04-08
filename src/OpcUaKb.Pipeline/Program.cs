@@ -76,6 +76,83 @@ try
     await statusTracker.UpdateAsync("index", "completed",
         elapsedSec: (int)indexSw.Elapsed.TotalSeconds);
 
+    // ── Phase 3: Parse NodeSets ─────────────────────────────────────────
+    log.LogInformation("[PIPELINE] Phase={Phase} Status={Status}", "nodeset", "started");
+    await statusTracker.UpdateAsync("nodeset", "running");
+
+    var nodesetSw = Stopwatch.StartNew();
+    var nodesetParser = new OpcUaNodeSetParser(storageConnStr, loggerFactory.CreateLogger<OpcUaNodeSetParser>());
+    var nodesetDocs = await nodesetParser.ParseAllAsync();
+    log.LogInformation("[PIPELINE] Phase={Phase} Docs={Count}", "nodeset", nodesetDocs.Count);
+
+    if (nodesetDocs.Count > 0)
+    {
+        // Generate embeddings for nodeset docs (reuse indexer's infrastructure)
+        log.LogInformation("[PIPELINE] Phase={Phase} Status={Status} Docs={Count}", "nodeset-embed", "started", nodesetDocs.Count);
+        var embedSem = new SemaphoreSlim(2);
+        int nodesetEmbedded = 0;
+        for (int i = 0; i < nodesetDocs.Count; i += 16)
+        {
+            var batch = nodesetDocs.Skip(i).Take(16).ToList();
+            await embedSem.WaitAsync();
+            try
+            {
+                var texts = batch.Select(d => (string)d["page_chunk"]).ToList();
+                var embBody = JsonSerializer.Serialize(new { input = texts, model = "text-embedding-3-large" });
+
+                var embResponse = await RetryHelper.RetryAsync(async () =>
+                {
+                    var req = new HttpRequestMessage(HttpMethod.Post,
+                        $"{aoaiEndpoint}/openai/deployments/text-embedding-3-large/embeddings?api-version=2024-06-01")
+                    { Content = new StringContent(embBody, Encoding.UTF8, "application/json") };
+                    req.Headers.Add("api-key", aoaiApiKey);
+                    return await new HttpClient().SendAsync(req);
+                }, log);
+                embResponse.EnsureSuccessStatusCode();
+
+                var embJson = JsonNode.Parse(await embResponse.Content.ReadAsStringAsync())!;
+                var vectors = embJson["data"]!.AsArray()
+                    .Select(d => d!["embedding"]!.AsArray().Select(v => v!.GetValue<float>()).ToArray())
+                    .ToList();
+                for (int j = 0; j < batch.Count && j < vectors.Count; j++)
+                    batch[j]["page_chunk_vector"] = vectors[j];
+                nodesetEmbedded += batch.Count;
+
+                if (nodesetEmbedded % 100 == 0)
+                    log.LogInformation("[NODESET] Embedded={N} Total={T}", nodesetEmbedded, nodesetDocs.Count);
+            }
+            catch (Exception ex)
+            {
+                log.LogWarning("[NODESET] Phase=embedding Error={Error} BatchStart={I}", ex.Message, i);
+            }
+            finally { embedSem.Release(); }
+        }
+
+        // Upload nodeset docs to search index
+        log.LogInformation("[PIPELINE] Phase={Phase} Status={Status}", "nodeset-upload", "started");
+        var searchClient = new SearchIndexClient(new Uri(searchEndpoint), new AzureKeyCredential(searchApiKey))
+            .GetSearchClient("opcua-content-index");
+        int nodesetUploaded = 0;
+        for (int i = 0; i < nodesetDocs.Count; i += 100)
+        {
+            var batch = nodesetDocs.Skip(i).Take(100).ToList();
+            await RetryHelper.RetrySearchAsync(async () =>
+            {
+                await searchClient.IndexDocumentsAsync(IndexDocumentsBatch.Upload(batch));
+                return true;
+            }, log);
+            nodesetUploaded += batch.Count;
+            if (nodesetUploaded % 500 == 0)
+                log.LogInformation("[NODESET] Uploaded={N} Total={T}", nodesetUploaded, nodesetDocs.Count);
+        }
+
+        log.LogInformation("[PIPELINE] Phase={Phase} Status={Status} Embedded={E} Uploaded={U}",
+            "nodeset", "completed", nodesetEmbedded, nodesetUploaded);
+    }
+
+    await statusTracker.UpdateAsync("nodeset", "completed",
+        elapsedSec: (int)nodesetSw.Elapsed.TotalSeconds);
+
     log.LogInformation("[PIPELINE] Phase={Phase} Status={Status} TotalElapsedSec={Elapsed}",
         "pipeline", "completed", (int)sw.Elapsed.TotalSeconds);
     await statusTracker.UpdateAsync("pipeline", "completed",
@@ -250,7 +327,7 @@ sealed class OpcUaCrawler : IDisposable
             }
 
             await Task.Delay(DelayMs);
-            var response = await _http.GetAsync(url);
+            var response = await RetryHelper.RetryAsync(() => _http.GetAsync(url), _log);
             if (!response.IsSuccessStatusCode)
             {
                 _log.LogWarning("HTTP {Code} for {Url}", (int)response.StatusCode, url);
@@ -460,7 +537,7 @@ sealed class OpcUaIndexer
 
         // Embeddings
         _log.LogInformation("[INDEX] Phase=embedding Total={Count}", allDocs.Count);
-        var sem = new SemaphoreSlim(5);
+        var sem = new SemaphoreSlim(2);
         int embDone = 0;
         for (int i = 0; i < allDocs.Count; i += EmbeddingBatchSize)
         {
@@ -496,7 +573,8 @@ sealed class OpcUaIndexer
             var batch = allDocs.Skip(i).Take(UploadBatchSize).ToList();
             try
             {
-                await _searchClient.IndexDocumentsAsync(IndexDocumentsBatch.Upload(batch));
+                await RetryHelper.RetrySearchAsync(
+                    () => _searchClient.IndexDocumentsAsync(IndexDocumentsBatch.Upload(batch)), _log);
                 uploaded += batch.Count;
                 if (uploaded % 500 == 0)
                 {
@@ -643,7 +721,15 @@ sealed class OpcUaIndexer
         var req = new HttpRequestMessage(HttpMethod.Post,
             $"{_aoaiEndpoint}/openai/deployments/{EmbeddingDeployment}/embeddings?api-version=2024-06-01")
         { Content = new StringContent(body, Encoding.UTF8, "application/json") };
-        var resp = await _http.SendAsync(req);
+        var resp = await RetryHelper.RetryAsync(
+            () =>
+            {
+                var clone = new HttpRequestMessage(req.Method, req.RequestUri)
+                { Content = new StringContent(body, Encoding.UTF8, "application/json") };
+                foreach (var h in _http.DefaultRequestHeaders)
+                    clone.Headers.TryAddWithoutValidation(h.Key, h.Value);
+                return _http.SendAsync(clone);
+            }, _log);
         resp.EnsureSuccessStatusCode();
         var json = JsonNode.Parse(await resp.Content.ReadAsStringAsync())!;
         return json["data"]!.AsArray()
@@ -668,5 +754,74 @@ sealed class OpcUaIndexer
             sb.AppendLine("| " + string.Join(" | ", cells.Select(c => c.TextContent.Trim().Replace("|", "\\|"))) + " |");
         }
         return sb.ToString();
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Retry Helper — exponential backoff for HTTP 429 / 503
+// ═══════════════════════════════════════════════════════════════════════
+
+static class RetryHelper
+{
+    const int MaxRetries = 5;
+
+    static TimeSpan ComputeDelay(HttpResponseMessage response, int attempt)
+    {
+        if (response.Headers.TryGetValues("Retry-After", out var values))
+        {
+            var raw = values.FirstOrDefault();
+            if (int.TryParse(raw, out var secs))
+                return TimeSpan.FromSeconds(secs);
+            if (DateTimeOffset.TryParse(raw, out var date))
+            {
+                var delta = date - DateTimeOffset.UtcNow;
+                if (delta > TimeSpan.Zero) return delta;
+            }
+        }
+        var baseSec = Math.Pow(2, attempt); // 1, 2, 4, 8, 16
+        var jitter = baseSec * (0.75 + Random.Shared.NextDouble() * 0.5); // ±25%
+        return TimeSpan.FromSeconds(jitter);
+    }
+
+    public static async Task<HttpResponseMessage> RetryAsync(
+        Func<Task<HttpResponseMessage>> action, ILogger log)
+    {
+        for (int attempt = 0; ; attempt++)
+        {
+            var response = await action();
+            if (response.StatusCode is not ((System.Net.HttpStatusCode)429 or System.Net.HttpStatusCode.ServiceUnavailable))
+                return response;
+
+            if (attempt >= MaxRetries)
+                return response;
+
+            var delay = ComputeDelay(response, attempt);
+            log.LogWarning("[RETRY] StatusCode={Code} Attempt={Attempt}/{Max} DelayMs={DelayMs}",
+                (int)response.StatusCode, attempt + 1, MaxRetries, (int)delay.TotalMilliseconds);
+            response.Dispose();
+            await Task.Delay(delay);
+        }
+    }
+
+    public static async Task<T> RetrySearchAsync<T>(
+        Func<Task<T>> action, ILogger log)
+    {
+        for (int attempt = 0; ; attempt++)
+        {
+            try
+            {
+                return await action();
+            }
+            catch (RequestFailedException ex) when (
+                ex.Status is 429 or 503 && attempt < MaxRetries)
+            {
+                var baseSec = Math.Pow(2, attempt);
+                var jitter = baseSec * (0.75 + Random.Shared.NextDouble() * 0.5);
+                var delay = TimeSpan.FromSeconds(jitter);
+                log.LogWarning("[RETRY] SearchRequestFailed StatusCode={Code} Attempt={Attempt}/{Max} DelayMs={DelayMs}",
+                    ex.Status, attempt + 1, MaxRetries, (int)delay.TotalMilliseconds);
+                await Task.Delay(delay);
+            }
+        }
     }
 }
