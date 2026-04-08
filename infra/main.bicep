@@ -1,0 +1,295 @@
+// ═══════════════════════════════════════════════════════════════════════
+// OPC UA Knowledge Base — Azure Infrastructure
+// Deploys all resources needed to run the crawl+index pipeline and
+// expose the knowledge base via Azure AI Search MCP endpoint.
+// ═══════════════════════════════════════════════════════════════════════
+
+@minLength(3)
+@description('Prefix used to derive all resource names')
+param prefix string = 'opcua-kb'
+
+@description('Azure region for all resources')
+param location string = resourceGroup().location
+
+@description('GPT-4o model version')
+param gptModelVersion string = '2024-11-20'
+
+@description('Container image for the pipeline job (empty = placeholder)')
+param pipelineImage string = ''
+
+@description('Cron schedule for the pipeline job')
+param cronSchedule string = '0 2 * * 0'
+
+// ── Derived names ────────────────────────────────────────────────────
+var searchName = '${prefix}-search'
+var openaiName = '${prefix}-openai'
+var storageName = take(replace('${prefix}storage', '-', ''), 24)
+var docaiName = '${prefix}-docai'
+var acrName = replace('${prefix}registry', '-', '')
+var envName = '${prefix}-env'
+var jobName = '${prefix}-pipeline-job'
+var logAnalyticsName = '${prefix}-logs'
+var workbookName = guid(resourceGroup().id, 'opcua-pipeline-dashboard')
+
+var containerImage = empty(pipelineImage) ? 'mcr.microsoft.com/dotnet/runtime:9.0' : pipelineImage
+
+// ── 1. Azure AI Search ──────────────────────────────────────────────
+resource search 'Microsoft.Search/searchServices@2024-06-01-preview' = {
+  name: searchName
+  location: location
+  sku: {
+    name: 'standard'
+  }
+  identity: {
+    type: 'SystemAssigned'
+  }
+  properties: {
+    hostingMode: 'default'
+    semanticSearch: 'standard'
+    replicaCount: 1
+    partitionCount: 1
+  }
+}
+
+// ── 2. Azure OpenAI ─────────────────────────────────────────────────
+resource openai 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
+  name: openaiName
+  location: location
+  kind: 'OpenAI'
+  sku: {
+    name: 'S0'
+  }
+  properties: {
+    customSubDomainName: openaiName
+    publicNetworkAccess: 'Enabled'
+  }
+}
+
+resource gpt4oDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' = {
+  parent: openai
+  name: 'gpt-4o'
+  sku: {
+    name: 'Standard'
+    capacity: 30
+  }
+  properties: {
+    model: {
+      format: 'OpenAI'
+      name: 'gpt-4o'
+      version: gptModelVersion
+    }
+  }
+}
+
+resource embeddingDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' = {
+  parent: openai
+  name: 'text-embedding-3-large'
+  sku: {
+    name: 'Standard'
+    capacity: 30
+  }
+  properties: {
+    model: {
+      format: 'OpenAI'
+      name: 'text-embedding-3-large'
+      version: '1'
+    }
+  }
+  dependsOn: [gpt4oDeployment]
+}
+
+// ── 3. Azure Blob Storage ───────────────────────────────────────────
+resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = {
+  name: storageName
+  location: location
+  kind: 'StorageV2'
+  sku: {
+    name: 'Standard_LRS'
+  }
+  properties: {
+    minimumTlsVersion: 'TLS1_2'
+    allowBlobPublicAccess: false
+    supportsHttpsTrafficOnly: true
+  }
+}
+
+// ── 4. Azure Document Intelligence ──────────────────────────────────
+resource docai 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
+  name: docaiName
+  location: location
+  kind: 'FormRecognizer'
+  sku: {
+    name: 'S0'
+  }
+  properties: {
+    customSubDomainName: docaiName
+    publicNetworkAccess: 'Enabled'
+  }
+}
+
+// ── 5. Azure Container Registry ─────────────────────────────────────
+resource acr 'Microsoft.ContainerRegistry/registries@2023-11-01-preview' = {
+  name: acrName
+  location: location
+  sku: {
+    name: 'Basic'
+  }
+  properties: {
+    adminUserEnabled: true
+  }
+}
+
+// ── 6. Log Analytics + Container Apps Environment ───────────────────
+resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
+  name: logAnalyticsName
+  location: location
+  properties: {
+    sku: {
+      name: 'PerGB2018'
+    }
+    retentionInDays: 30
+  }
+}
+
+resource containerEnv 'Microsoft.App/managedEnvironments@2024-03-01' = {
+  name: envName
+  location: location
+  properties: {
+    appLogsConfiguration: {
+      destination: 'log-analytics'
+      logAnalyticsConfiguration: {
+        customerId: logAnalytics.properties.customerId
+        sharedKey: logAnalytics.listKeys().primarySharedKey
+      }
+    }
+  }
+}
+
+// ── 7. Container Apps Job ───────────────────────────────────────────
+resource pipelineJob 'Microsoft.App/jobs@2024-03-01' = {
+  name: jobName
+  location: location
+  properties: {
+    environmentId: containerEnv.id
+    configuration: {
+      triggerType: 'Schedule'
+      scheduleTriggerConfig: {
+        cronExpression: cronSchedule
+        parallelism: 1
+        replicaCompletionCount: 1
+      }
+      replicaTimeout: 28800 // 8 hours
+      registries: [
+        {
+          server: acr.properties.loginServer
+          username: acr.listCredentials().username
+          passwordSecretRef: 'acr-password'
+        }
+      ]
+      secrets: [
+        {
+          name: 'acr-password'
+          value: acr.listCredentials().passwords[0].value
+        }
+        {
+          name: 'storage-connection-string'
+          value: 'DefaultEndpointsProtocol=https;AccountName=${storageAccount.name};AccountKey=${storageAccount.listKeys().keys[0].value};EndpointSuffix=${environment().suffixes.storage}'
+        }
+        {
+          name: 'search-api-key'
+          value: search.listAdminKeys().primaryKey
+        }
+        {
+          name: 'aoai-api-key'
+          value: openai.listKeys().key1
+        }
+      ]
+    }
+    template: {
+      containers: [
+        {
+          name: 'pipeline'
+          image: containerImage
+          resources: {
+            cpu: json('2')
+            memory: '4Gi'
+          }
+          env: [
+            {
+              name: 'STORAGE_CONNECTION_STRING'
+              secretRef: 'storage-connection-string'
+            }
+            {
+              name: 'SEARCH_ENDPOINT'
+              value: 'https://${search.name}.search.windows.net'
+            }
+            {
+              name: 'SEARCH_API_KEY'
+              secretRef: 'search-api-key'
+            }
+            {
+              name: 'AOAI_ENDPOINT'
+              value: openai.properties.endpoint
+            }
+            {
+              name: 'AOAI_API_KEY'
+              secretRef: 'aoai-api-key'
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
+
+// ── 8. Role assignment — Search → OpenAI (Cognitive Services User) ──
+var cognitiveServicesUserRole = subscriptionResourceId(
+  'Microsoft.Authorization/roleDefinitions',
+  'a97b65f3-24c7-4388-baec-2e87135dc908'
+)
+
+resource searchOpenaiRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(search.id, openai.id, cognitiveServicesUserRole)
+  scope: openai
+  properties: {
+    principalId: search.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: cognitiveServicesUserRole
+  }
+}
+
+// ── 9. Azure Monitor Workbook ───────────────────────────────────────
+var workbookContent = '''
+{"version":"Notebook/1.0","items":[{"type":1,"content":{"json":"# OPC UA Knowledge Base Pipeline Dashboard\n\nMonitors crawl + index pipeline for reference.opcfoundation.org"},"name":"header"},{"type":3,"content":{"version":"KqlItem/1.0","query":"ContainerAppConsoleLogs_CL\n| where ContainerGroupName_s startswith \"opcua-pipeline-job\"\n| where Log_s has \"[PIPELINE]\"\n| parse Log_s with * \"Phase=\" Phase:string \" Status=\" Status:string \" \" *\n| project TimeGenerated, Phase, Status\n| order by TimeGenerated desc\n| take 20","size":1,"title":"Recent Pipeline Events","timeContext":{"durationMs":604800000},"queryType":0,"resourceType":"microsoft.operationalinsights/workspaces"},"name":"pipeline-events"},{"type":3,"content":{"version":"KqlItem/1.0","query":"ContainerAppConsoleLogs_CL\n| where ContainerGroupName_s startswith \"opcua-pipeline-job\"\n| where Log_s has \"[CRAWL]\" and Log_s has \"Downloaded=\"\n| parse Log_s with * \"Downloaded=\" Downloaded:long \" Skipped=\" Skipped:long \" Errors=\" Errors:long \" Queued=\" Queued:long\n| project TimeGenerated, Downloaded, Skipped, Errors, Queued\n| order by TimeGenerated asc","size":0,"title":"Crawl Progress Over Time","timeContext":{"durationMs":86400000},"queryType":0,"resourceType":"microsoft.operationalinsights/workspaces","visualization":"linechart","chartSettings":{"yAxis":["Downloaded","Queued","Errors"]}},"name":"crawl-progress"},{"type":3,"content":{"version":"KqlItem/1.0","query":"ContainerAppConsoleLogs_CL\n| where ContainerGroupName_s startswith \"opcua-pipeline-job\"\n| where Log_s has \"[CRAWL]\" and Log_s has \"Downloaded=\"\n| parse Log_s with * \"Downloaded=\" Downloaded:long \" Skipped=\" Skipped:long \" Errors=\" Errors:long *\n| summarize MaxDownloaded=max(Downloaded), MaxSkipped=max(Skipped), TotalErrors=max(Errors) by bin(TimeGenerated, 1h)\n| order by TimeGenerated desc\n| take 1","size":4,"title":"Latest Crawl Stats","timeContext":{"durationMs":86400000},"queryType":0,"resourceType":"microsoft.operationalinsights/workspaces","visualization":"tiles","tileSettings":{"showBorder":true}},"name":"crawl-stats"},{"type":3,"content":{"version":"KqlItem/1.0","query":"ContainerAppConsoleLogs_CL\n| where ContainerGroupName_s startswith \"opcua-pipeline-job\"\n| where Log_s has \"[INDEX]\" and Log_s has \"Phase=\"\n| parse Log_s with * \"Phase=\" Phase:string \" \" *\n| extend Embedded = extract(\"Embedded=([0-9]+)\", 1, Log_s)\n| extend Uploaded = extract(\"Uploaded=([0-9]+)\", 1, Log_s)\n| extend Chunks = extract(\"Chunks=([0-9]+)\", 1, Log_s)\n| extend Parsed = extract(\"Parsed=([0-9]+)\", 1, Log_s)\n| project TimeGenerated, Phase, Parsed, Chunks, Embedded, Uploaded\n| order by TimeGenerated asc","size":0,"title":"Index Progress Over Time","timeContext":{"durationMs":86400000},"queryType":0,"resourceType":"microsoft.operationalinsights/workspaces","visualization":"linechart"},"name":"index-progress"},{"type":3,"content":{"version":"KqlItem/1.0","query":"ContainerAppConsoleLogs_CL\n| where ContainerGroupName_s startswith \"opcua-pipeline-job\"\n| where Log_s has \"Error=\" or Log_s has \"error\" or Log_s has \"Warning\"\n| project TimeGenerated, Log_s\n| order by TimeGenerated desc\n| take 50","size":1,"title":"Errors & Warnings","timeContext":{"durationMs":604800000},"queryType":0,"resourceType":"microsoft.operationalinsights/workspaces","visualization":"table"},"name":"errors"},{"type":3,"content":{"version":"KqlItem/1.0","query":"ContainerAppConsoleLogs_CL\n| where ContainerGroupName_s startswith \"opcua-pipeline-job\"\n| where Log_s has \"[PIPELINE]\" and Log_s has \"TotalElapsedSec=\"\n| parse Log_s with * \"TotalElapsedSec=\" ElapsedSec:long\n| project TimeGenerated, DurationMin=ElapsedSec/60.0\n| order by TimeGenerated desc\n| take 10","size":1,"title":"Execution History (Duration in Minutes)","timeContext":{"durationMs":2592000000},"queryType":0,"resourceType":"microsoft.operationalinsights/workspaces","visualization":"barchart"},"name":"exec-history"}],"isLocked":false}
+'''
+
+resource workbook 'Microsoft.Insights/workbooks@2022-04-01' = {
+  name: workbookName
+  location: location
+  kind: 'shared'
+  properties: {
+    displayName: 'OPC UA Pipeline Dashboard'
+    category: 'workbook'
+    sourceId: logAnalytics.id
+    serializedData: workbookContent
+  }
+}
+
+// ── Outputs ─────────────────────────────────────────────────────────
+
+output searchEndpoint string = 'https://${search.name}.search.windows.net'
+
+@secure()
+output searchApiKey string = search.listAdminKeys().primaryKey
+
+output aoaiEndpoint string = openai.properties.endpoint
+
+@secure()
+output aoaiApiKey string = openai.listKeys().key1
+
+@secure()
+output storageConnectionString string = 'DefaultEndpointsProtocol=https;AccountName=${storageAccount.name};AccountKey=${storageAccount.listKeys().keys[0].value};EndpointSuffix=${environment().suffixes.storage}'
+
+output acrLoginServer string = acr.properties.loginServer
+
+output mcpEndpoint string = 'https://${search.name}.search.windows.net/knowledgebases/${prefix}-kb/mcp?api-version=2025-11-01-preview'
