@@ -250,7 +250,7 @@ sealed class PipelineStatus
 sealed class OpcUaCrawler : IDisposable
 {
     const string BaseUrl = "https://reference.opcfoundation.org/";
-    const string AllowedHost = "reference.opcfoundation.org";
+    const string AllowedDomain = ".opcfoundation.org";
     const string ContainerName = "opcua-content";
     const string CrawlStateBlob = "_crawl-state.json";
     const int MaxConcurrency = 5;
@@ -391,7 +391,7 @@ sealed class OpcUaCrawler : IDisposable
                 if (string.IsNullOrWhiteSpace(href) || href.StartsWith('#') || href.StartsWith("javascript:"))
                     continue;
                 if (Uri.TryCreate(baseUri, href, out var resolved) &&
-                    resolved.Host.Equals(AllowedHost, StringComparison.OrdinalIgnoreCase))
+                    IsAllowedDomain(resolved.Host))
                     Enqueue(queue, resolved.GetLeftPart(UriPartial.Path), true);
             }
 
@@ -400,12 +400,16 @@ sealed class OpcUaCrawler : IDisposable
                 var src = img.GetAttribute("src") ?? img.GetAttribute("href");
                 if (string.IsNullOrWhiteSpace(src)) continue;
                 if (Uri.TryCreate(baseUri, src, out var resolved) &&
-                    resolved.Host.Equals(AllowedHost, StringComparison.OrdinalIgnoreCase))
+                    IsAllowedDomain(resolved.Host))
                     Enqueue(queue, resolved.GetLeftPart(UriPartial.Query), false);
             }
         }
         catch { /* non-fatal */ }
     }
+
+    static bool IsAllowedDomain(string host) =>
+        host.EndsWith(AllowedDomain, StringComparison.OrdinalIgnoreCase) ||
+        host.Equals("opcfoundation.org", StringComparison.OrdinalIgnoreCase);
 
     void Enqueue(ConcurrentQueue<(string, bool)> queue, string url, bool isPage)
     {
@@ -416,10 +420,16 @@ sealed class OpcUaCrawler : IDisposable
     static string UrlToBlobName(string url, string? contentType)
     {
         var uri = new Uri(url);
+        // Prefix with host for non-reference domains to avoid path collisions
+        var prefix = uri.Host.Equals("reference.opcfoundation.org", StringComparison.OrdinalIgnoreCase)
+            ? "" : uri.Host.Replace(".", "_") + "/";
         var path = uri.AbsolutePath.TrimStart('/');
         if (string.IsNullOrEmpty(path) || path.EndsWith('/'))
             path += "index.html";
-        return path;
+        // Append .xml for API nodeset endpoints that serve XML
+        if (contentType?.Contains("xml") == true && !path.EndsWith(".xml", StringComparison.OrdinalIgnoreCase))
+            path += ".xml";
+        return prefix + path;
     }
 
     async Task LoadStateAsync()
