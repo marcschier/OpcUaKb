@@ -250,6 +250,8 @@ sealed class PipelineStatus
 sealed class OpcUaCrawler : IDisposable
 {
     const string BaseUrl = "https://reference.opcfoundation.org/";
+    const string PrimaryHost = "reference.opcfoundation.org";
+    const string FullCrawlHost = "profiles.opcfoundation.org";
     const string AllowedDomain = ".opcfoundation.org";
     const string ContainerName = "opcua-content";
     const string CrawlStateBlob = "_crawl-state.json";
@@ -292,16 +294,16 @@ sealed class OpcUaCrawler : IDisposable
         await LoadStateAsync();
         _log.LogInformation("Crawl state: {Count} previously crawled URLs", _crawled.Count);
 
-        var queue = new ConcurrentQueue<(string url, bool isPage)>();
-        Enqueue(queue, BaseUrl, true);
+        var queue = new ConcurrentQueue<(string url, bool isPage, bool followLinks)>();
+        Enqueue(queue, BaseUrl, true, true);
 
         while (!queue.IsEmpty)
         {
-            var batch = new List<(string url, bool isPage)>();
+            var batch = new List<(string url, bool isPage, bool followLinks)>();
             while (batch.Count < MaxConcurrency * 2 && queue.TryDequeue(out var item))
                 batch.Add(item);
 
-            await Task.WhenAll(batch.Select(item => ProcessAsync(item.url, item.isPage, queue)));
+            await Task.WhenAll(batch.Select(item => ProcessAsync(item.url, item.isPage, item.followLinks, queue)));
 
             if (_downloaded > 0 && _downloaded % 50 == 0)
                 await SaveStateAsync();
@@ -314,7 +316,7 @@ sealed class OpcUaCrawler : IDisposable
             downloaded: _downloaded, skipped: _skipped, errors: _errors, queued: 0);
     }
 
-    async Task ProcessAsync(string url, bool isPage, ConcurrentQueue<(string, bool)> queue)
+    async Task ProcessAsync(string url, bool isPage, bool followLinks, ConcurrentQueue<(string, bool, bool)> queue)
     {
         await _throttle.WaitAsync();
         try
@@ -350,7 +352,7 @@ sealed class OpcUaCrawler : IDisposable
             _crawled[url] = DateTimeOffset.UtcNow;
             Interlocked.Increment(ref _downloaded);
 
-            if (isPage && (response.Content.Headers.ContentType?.MediaType?.Contains("html") == true))
+            if (isPage && followLinks && (response.Content.Headers.ContentType?.MediaType?.Contains("html") == true))
             {
                 var html = Encoding.UTF8.GetString(bytes);
                 ExtractLinks(html, url, queue);
@@ -377,7 +379,7 @@ sealed class OpcUaCrawler : IDisposable
         }
     }
 
-    void ExtractLinks(string html, string baseUrl, ConcurrentQueue<(string, bool)> queue)
+    void ExtractLinks(string html, string baseUrl, ConcurrentQueue<(string, bool, bool)> queue)
     {
         try
         {
@@ -392,7 +394,7 @@ sealed class OpcUaCrawler : IDisposable
                     continue;
                 if (Uri.TryCreate(baseUri, href, out var resolved) &&
                     IsAllowedDomain(resolved.Host))
-                    Enqueue(queue, resolved.GetLeftPart(UriPartial.Path), true);
+                    Enqueue(queue, resolved.GetLeftPart(UriPartial.Path), true, ShouldFollowLinks(resolved.Host));
             }
 
             foreach (var img in doc.QuerySelectorAll("img[src], link[href], script[src]"))
@@ -401,7 +403,7 @@ sealed class OpcUaCrawler : IDisposable
                 if (string.IsNullOrWhiteSpace(src)) continue;
                 if (Uri.TryCreate(baseUri, src, out var resolved) &&
                     IsAllowedDomain(resolved.Host))
-                    Enqueue(queue, resolved.GetLeftPart(UriPartial.Query), false);
+                    Enqueue(queue, resolved.GetLeftPart(UriPartial.Query), false, false);
             }
         }
         catch { /* non-fatal */ }
@@ -411,10 +413,15 @@ sealed class OpcUaCrawler : IDisposable
         host.EndsWith(AllowedDomain, StringComparison.OrdinalIgnoreCase) ||
         host.Equals("opcfoundation.org", StringComparison.OrdinalIgnoreCase);
 
-    void Enqueue(ConcurrentQueue<(string, bool)> queue, string url, bool isPage)
+    // Full crawl (follow links) for primary + profiles; depth-1 only for other subdomains
+    static bool ShouldFollowLinks(string host) =>
+        host.Equals(PrimaryHost, StringComparison.OrdinalIgnoreCase) ||
+        host.Equals(FullCrawlHost, StringComparison.OrdinalIgnoreCase);
+
+    void Enqueue(ConcurrentQueue<(string, bool, bool)> queue, string url, bool isPage, bool followLinks)
     {
         if (_queued.TryAdd(url, 0))
-            queue.Enqueue((url, isPage));
+            queue.Enqueue((url, isPage, followLinks));
     }
 
     static string UrlToBlobName(string url, string? contentType)
