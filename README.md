@@ -4,40 +4,19 @@ An Azure AI Search agentic retrieval pipeline that exposes the complete OPC UA r
 
 ## Architecture
 
-```
-*.opcfoundation.org
-        |
-  +------------------+     +-------------------+
-  | Web Crawler (C#) | --> | Azure Blob Storage|
-  +------------------+     +-------------------+
-                                    |
-                            +-------+-------+
-                            |               |
-                     +------+------+  +-----+------+
-                     | HTML Chunker|  | NodeSet XML|
-                     | + Embeddings|  | Parser     |
-                     +------+------+  +-----+------+
-                            |               |
-                            v               v
-  +------------------+     +-------------------+
-  | Web Knowledge    |     | Search Index      |
-  | Source (Bing)    |     | (vectors + text)  |
-  +------------------+     +-------------------+
-        \                       /
-         v                     v
-     +---------------------------+
-     | Knowledge Base            |
-     | (Azure AI Search)         |
-     +---------------------------+
-              |
-              v
-     +---------------------------+
-     | MCP Endpoint              |
-     +---------------------------+
-              |
-     +--------+--------+
-     |                  |
-  Copilot CLI      OpcUaKb.Chat
+```mermaid
+graph TD
+    OPC["*.opcfoundation.org"] --> Crawler["Web Crawler (C#)"]
+    Crawler --> Blob["Azure Blob Storage"]
+    Blob --> Chunker["HTML Chunker + Embeddings"]
+    Blob --> NodeSet["NodeSet XML Parser"]
+    Chunker --> Index["Search Index (vectors + text)"]
+    NodeSet --> Index
+    Bing["Web Knowledge Source (Bing)"] --> KB["Knowledge Base (Azure AI Search)"]
+    Index --> KB
+    KB --> MCP["MCP Endpoint"]
+    MCP --> Copilot["Copilot CLI"]
+    MCP --> Chat["OpcUaKb.Chat"]
 ```
 
 - **Web Knowledge Source** — Bing Custom Search across `*.opcfoundation.org` for real-time queries
