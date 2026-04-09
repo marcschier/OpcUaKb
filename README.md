@@ -26,6 +26,12 @@ graph TD
 - **MCP Endpoint** — Automatically exposed by the knowledge base for any MCP-compatible client
 - **Monitoring** — Azure Monitor Workbook dashboard with crawl progress, index progress, errors, and execution history
 
+## Prerequisites
+
+- [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
+- [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) (logged in)
+- [Docker](https://docs.docker.com/get-docker/) (for container builds)
+
 ## Projects
 
 | Project | Description |
@@ -139,7 +145,15 @@ dotnet run --project src/OpcUaKb.Chat
 
 ## Manual Pipeline Run
 
-The pipeline runs weekly (Sunday 2am UTC) as a Container Apps Job. To trigger manually:
+The pipeline runs weekly (Sunday 2am UTC) as a Container Apps Job with a 24-hour timeout. It executes three phases:
+
+1. **Crawl** — BFS crawl of `reference.opcfoundation.org` (full) + `profiles.opcfoundation.org` (full) + other `*.opcfoundation.org` (depth 1). Content stored in Azure Blob Storage with incremental state tracking.
+2. **Index** — Parse HTML into chunks, generate vector embeddings via `text-embedding-3-large` (120K TPM), upload to Azure AI Search with semantic ranking.
+3. **NodeSet** — Parse NodeSet XML files, extract variable definitions with ModellingRule (Mandatory/Optional), embed, and upload.
+
+All HTTP calls include retry logic with exponential backoff for 429/503 errors.
+
+To trigger manually:
 
 ```bash
 # Set environment variables

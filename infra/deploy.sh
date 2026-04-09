@@ -128,19 +128,26 @@ ok "Pipeline job updated."
 # ── Step 6: Create Web Knowledge Source ──────────────────────────────
 info "Creating web knowledge source..."
 SEARCH_BASE="https://${SEARCH_NAME}.search.windows.net"
-API_VERSION="2025-05-01-preview"
+API_VERSION="2025-11-01-preview"
 
 # Idempotent: PUT is safe to call multiple times
 HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
-  "${SEARCH_BASE}/knowledgesources/${PREFIX}-web-source?api-version=${API_VERSION}" \
+  "${SEARCH_BASE}/knowledgesources/${PREFIX}-web-ks?api-version=${API_VERSION}" \
   -H "Content-Type: application/json" \
   -H "api-key: ${SEARCH_API_KEY}" \
   -d "{
-    \"name\": \"${PREFIX}-web-source\",
-    \"type\": \"web\",
-    \"webConfiguration\": {
-      \"urls\": [\"https://reference.opcfoundation.org/\"],
-      \"crawlDepth\": 3
+    \"name\": \"${PREFIX}-web-ks\",
+    \"kind\": \"web\",
+    \"description\": \"OPC UA reference specifications from *.opcfoundation.org\",
+    \"webParameters\": {
+      \"domains\": {
+        \"allowedDomains\": [
+          { \"address\": \"reference.opcfoundation.org\", \"includeSubpages\": true },
+          { \"address\": \"profiles.opcfoundation.org\", \"includeSubpages\": true },
+          { \"address\": \"www.opcfoundation.org\", \"includeSubpages\": true },
+          { \"address\": \"opcfoundation.org\", \"includeSubpages\": true }
+        ]
+      }
     }
   }")
 
@@ -155,24 +162,25 @@ HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
   -H "api-key: ${SEARCH_API_KEY}" \
   -d "{
     \"name\": \"${KB_NAME}\",
-    \"description\": \"OPC UA specification knowledge base\",
+    \"description\": \"OPC UA knowledge base for answering questions about OPC UA specifications, generating test code, and looking up NodeSet definitions.\",
     \"knowledgeSources\": [
-      { \"knowledgeSourceName\": \"${PREFIX}-web-source\" }
+      { \"name\": \"${PREFIX}-web-ks\" }
     ],
-    \"embeddingModel\": {
-      \"azureOpenAIConnection\": {
-        \"resourceUri\": \"${AOAI_ENDPOINT}\",
-        \"deploymentId\": \"text-embedding-3-large\",
-        \"modelName\": \"text-embedding-3-large\"
+    \"models\": [
+      {
+        \"kind\": \"azureOpenAI\",
+        \"azureOpenAIParameters\": {
+          \"resourceUri\": \"${AOAI_ENDPOINT}\",
+          \"deploymentId\": \"gpt-4o\",
+          \"modelName\": \"gpt-4o\"
+        }
       }
-    },
-    \"chatCompletionModel\": {
-      \"azureOpenAIConnection\": {
-        \"resourceUri\": \"${AOAI_ENDPOINT}\",
-        \"deploymentId\": \"gpt-4o\",
-        \"modelName\": \"gpt-4o\"
-      }
-    }
+    ],
+    \"retrievalReasoningEffort\": { \"kind\": \"low\" },
+    \"outputMode\": \"answerSynthesis\",
+    \"retrievalInstructions\": \"Use the OPC UA web knowledge source to answer questions about OPC UA specifications. This source covers all OPC 10000 specification parts, companion specifications, and NodeSet definitions.\",
+    \"answerInstructions\": \"Provide technically precise answers grounded in the OPC UA specifications. Include specification part numbers and section references. When generating code, use the OPC UA .NET Standard SDK conventions. Format code blocks with C# syntax.\"
+  }")
   }")
 
 [[ "$HTTP_STATUS" =~ ^2 ]] || warn "Knowledge base creation returned HTTP ${HTTP_STATUS} (may already exist)."
@@ -181,12 +189,15 @@ ok "Knowledge base '${KB_NAME}' configured."
 # ── Step 8: Test query ───────────────────────────────────────────────
 info "Running test query against the knowledge base..."
 QUERY_RESULT=$(curl -s -X POST \
-  "${SEARCH_BASE}/knowledgebases/${KB_NAME}/query?api-version=${API_VERSION}" \
+  "${SEARCH_BASE}/knowledgebases/${KB_NAME}/retrieve?api-version=${API_VERSION}" \
   -H "Content-Type: application/json" \
   -H "api-key: ${SEARCH_API_KEY}" \
-  -d '{ "query": "What is OPC UA?" }' 2>/dev/null) || true
+  -d '{
+    "messages": [{ "role": "user", "content": [{ "type": "text", "text": "What is OPC UA?" }] }],
+    "retrievalReasoningEffort": { "kind": "low" }
+  }' 2>/dev/null) || true
 
-if echo "$QUERY_RESULT" | jq -e '.answer' >/dev/null 2>&1; then
+if echo "$QUERY_RESULT" | jq -e '.response[0].content[0].text' >/dev/null 2>&1; then
   ok "Test query succeeded."
 else
   warn "Test query did not return an answer (knowledge base may still be indexing)."
@@ -206,10 +217,10 @@ echo -e "  MCP Endpoint:     ${BLUE}${MCP_ENDPOINT}${NC}"
 echo ""
 echo -e "  ${YELLOW}To configure GitHub Copilot CLI with this knowledge base:${NC}"
 echo ""
-echo -e "  Add to your MCP config (~/.copilot/mcp-config.json):"
+echo -e "  Add to ~/.copilot/mcp.json:"
 echo ""
 echo -e "    {"
-echo -e "      \"servers\": {"
+echo -e "      \"mcpServers\": {"
 echo -e "        \"opcua-kb\": {"
 echo -e "          \"type\": \"http\","
 echo -e "          \"url\": \"${MCP_ENDPOINT}\","

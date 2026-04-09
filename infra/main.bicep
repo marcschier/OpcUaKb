@@ -86,7 +86,7 @@ resource embeddingDeployment 'Microsoft.CognitiveServices/accounts/deployments@2
   name: 'text-embedding-3-large'
   sku: {
     name: 'Standard'
-    capacity: 30
+    capacity: 120
   }
   properties: {
     model: {
@@ -178,7 +178,7 @@ resource pipelineJob 'Microsoft.App/jobs@2024-03-01' = {
         parallelism: 1
         replicaCompletionCount: 1
       }
-      replicaTimeout: 28800 // 8 hours
+      replicaTimeout: 86400 // 24 hours
       registries: [
         {
           server: acr.properties.loginServer
