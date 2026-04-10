@@ -87,8 +87,10 @@ try
 
     if (nodesetDocs.Count > 0)
     {
-        // Generate embeddings for nodeset docs (reuse indexer's infrastructure)
+        // Generate embeddings for nodeset docs using shared HttpClient
         log.LogInformation("[PIPELINE] Phase={Phase} Status={Status} Docs={Count}", "nodeset-embed", "started", nodesetDocs.Count);
+        using var nodesetHttp = new HttpClient();
+        nodesetHttp.DefaultRequestHeaders.Add("api-key", aoaiApiKey);
         var embedSem = new SemaphoreSlim(2);
         int nodesetEmbedded = 0;
         for (int i = 0; i < nodesetDocs.Count; i += 16)
@@ -105,10 +107,15 @@ try
                     var req = new HttpRequestMessage(HttpMethod.Post,
                         $"{aoaiEndpoint}/openai/deployments/text-embedding-3-large/embeddings?api-version=2024-06-01")
                     { Content = new StringContent(embBody, Encoding.UTF8, "application/json") };
-                    req.Headers.Add("api-key", aoaiApiKey);
-                    return await new HttpClient().SendAsync(req);
+                    return await nodesetHttp.SendAsync(req);
                 }, log);
-                embResponse.EnsureSuccessStatusCode();
+
+                if (!embResponse.IsSuccessStatusCode)
+                {
+                    log.LogWarning("[NODESET] Phase=embedding Status={Code} BatchStart={I}",
+                        (int)embResponse.StatusCode, i);
+                    continue;
+                }
 
                 var embJson = JsonNode.Parse(await embResponse.Content.ReadAsStringAsync())!;
                 var vectors = embJson["data"]!.AsArray()
@@ -127,6 +134,7 @@ try
             }
             finally { embedSem.Release(); }
         }
+        log.LogInformation("[NODESET] Phase=embedding Status=completed Embedded={N}", nodesetEmbedded);
 
         // Upload nodeset docs to search index
         log.LogInformation("[PIPELINE] Phase={Phase} Status={Status}", "nodeset-upload", "started");
