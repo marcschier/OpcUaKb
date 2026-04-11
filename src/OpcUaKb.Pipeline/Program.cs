@@ -87,75 +87,35 @@ try
 
     if (nodesetDocs.Count > 0)
     {
-        // Generate embeddings for nodeset docs using shared HttpClient
-        log.LogInformation("[PIPELINE] Phase={Phase} Status={Status} Docs={Count}", "nodeset-embed", "started", nodesetDocs.Count);
-        using var nodesetHttp = new HttpClient();
-        nodesetHttp.DefaultRequestHeaders.Add("api-key", aoaiApiKey);
-        var embedSem = new SemaphoreSlim(2);
-        int nodesetEmbedded = 0;
-        for (int i = 0; i < nodesetDocs.Count; i += 16)
-        {
-            var batch = nodesetDocs.Skip(i).Take(16).ToList();
-            await embedSem.WaitAsync();
-            try
-            {
-                var texts = batch.Select(d => (string)d["page_chunk"]).ToList();
-                var embBody = JsonSerializer.Serialize(new { input = texts, model = "text-embedding-3-large" });
-
-                var embResponse = await RetryHelper.RetryAsync(async () =>
-                {
-                    var req = new HttpRequestMessage(HttpMethod.Post,
-                        $"{aoaiEndpoint}/openai/deployments/text-embedding-3-large/embeddings?api-version=2024-06-01")
-                    { Content = new StringContent(embBody, Encoding.UTF8, "application/json") };
-                    return await nodesetHttp.SendAsync(req);
-                }, log);
-
-                if (!embResponse.IsSuccessStatusCode)
-                {
-                    log.LogWarning("[NODESET] Phase=embedding Status={Code} BatchStart={I}",
-                        (int)embResponse.StatusCode, i);
-                    continue;
-                }
-
-                var embJson = JsonNode.Parse(await embResponse.Content.ReadAsStringAsync())!;
-                var vectors = embJson["data"]!.AsArray()
-                    .Select(d => d!["embedding"]!.AsArray().Select(v => v!.GetValue<float>()).ToArray())
-                    .ToList();
-                for (int j = 0; j < batch.Count && j < vectors.Count; j++)
-                    batch[j]["page_chunk_vector"] = vectors[j];
-                nodesetEmbedded += batch.Count;
-
-                if (nodesetEmbedded % 100 == 0)
-                    log.LogInformation("[NODESET] Embedded={N} Total={T}", nodesetEmbedded, nodesetDocs.Count);
-            }
-            catch (Exception ex)
-            {
-                log.LogWarning("[NODESET] Phase=embedding Error={Error} BatchStart={I}", ex.Message, i);
-            }
-            finally { embedSem.Release(); }
-        }
-        log.LogInformation("[NODESET] Phase=embedding Status=completed Embedded={N}", nodesetEmbedded);
-
-        // Upload nodeset docs to search index
-        log.LogInformation("[PIPELINE] Phase={Phase} Status={Status}", "nodeset-upload", "started");
+        // Upload nodeset docs to search index WITHOUT pre-computing embeddings.
+        // The index has a vectorizer configured — Azure AI Search generates vectors at query time.
+        // This avoids hours of 429-throttled embedding API calls for potentially 100K+ nodeset docs.
+        log.LogInformation("[PIPELINE] Phase={Phase} Status={Status} Docs={Count}", "nodeset-upload", "started", nodesetDocs.Count);
         var searchClient = new SearchIndexClient(new Uri(searchEndpoint), new AzureKeyCredential(searchApiKey))
             .GetSearchClient("opcua-content-index");
         int nodesetUploaded = 0;
         for (int i = 0; i < nodesetDocs.Count; i += 100)
         {
             var batch = nodesetDocs.Skip(i).Take(100).ToList();
-            await RetryHelper.RetrySearchAsync(async () =>
+            try
             {
-                await searchClient.IndexDocumentsAsync(IndexDocumentsBatch.Upload(batch));
-                return true;
-            }, log);
-            nodesetUploaded += batch.Count;
-            if (nodesetUploaded % 500 == 0)
-                log.LogInformation("[NODESET] Uploaded={N} Total={T}", nodesetUploaded, nodesetDocs.Count);
+                await RetryHelper.RetrySearchAsync(async () =>
+                {
+                    await searchClient.IndexDocumentsAsync(IndexDocumentsBatch.Upload(batch));
+                    return true;
+                }, log);
+                nodesetUploaded += batch.Count;
+                if (nodesetUploaded % 1000 == 0)
+                    log.LogInformation("[NODESET] Uploaded={N} Total={T}", nodesetUploaded, nodesetDocs.Count);
+            }
+            catch (Exception ex)
+            {
+                log.LogWarning("[NODESET] Phase=upload Error={Error} BatchStart={I}", ex.Message, i);
+            }
         }
 
-        log.LogInformation("[PIPELINE] Phase={Phase} Status={Status} Embedded={E} Uploaded={U}",
-            "nodeset", "completed", nodesetEmbedded, nodesetUploaded);
+        log.LogInformation("[PIPELINE] Phase={Phase} Status={Status} Uploaded={U}",
+            "nodeset", "completed", nodesetUploaded);
     }
 
     await statusTracker.UpdateAsync("nodeset", "completed",
