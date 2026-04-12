@@ -87,16 +87,23 @@ try
 
     if (nodesetDocs.Count > 0)
     {
+        // Generate summary documents for aggregation queries
+        var summaryDocs = OpcUaNodeSetParser.GenerateSummaries(nodesetDocs);
+        log.LogInformation("[PIPELINE] Phase={Phase} Summaries={Count}", "nodeset-summary", summaryDocs.Count);
+
+        // Combine nodeset + summary docs for upload
+        var allNodesetDocs = nodesetDocs.Concat(summaryDocs).ToList();
+
         // Upload nodeset docs to search index WITHOUT pre-computing embeddings.
         // The index has a vectorizer configured — Azure AI Search generates vectors at query time.
         // This avoids hours of 429-throttled embedding API calls for potentially 100K+ nodeset docs.
-        log.LogInformation("[PIPELINE] Phase={Phase} Status={Status} Docs={Count}", "nodeset-upload", "started", nodesetDocs.Count);
+        log.LogInformation("[PIPELINE] Phase={Phase} Status={Status} Docs={Count}", "nodeset-upload", "started", allNodesetDocs.Count);
         var searchClient = new SearchIndexClient(new Uri(searchEndpoint), new AzureKeyCredential(searchApiKey))
             .GetSearchClient("opcua-content-index");
         int nodesetUploaded = 0;
-        for (int i = 0; i < nodesetDocs.Count; i += 100)
+        for (int i = 0; i < allNodesetDocs.Count; i += 100)
         {
-            var batch = nodesetDocs.Skip(i).Take(100).ToList();
+            var batch = allNodesetDocs.Skip(i).Take(100).ToList();
             try
             {
                 await RetryHelper.RetrySearchAsync(async () =>
@@ -106,7 +113,7 @@ try
                 }, log);
                 nodesetUploaded += batch.Count;
                 if (nodesetUploaded % 1000 == 0)
-                    log.LogInformation("[NODESET] Uploaded={N} Total={T}", nodesetUploaded, nodesetDocs.Count);
+                    log.LogInformation("[NODESET] Uploaded={N} Total={T}", nodesetUploaded, allNodesetDocs.Count);
             }
             catch (Exception ex)
             {
@@ -593,8 +600,10 @@ sealed class OpcUaIndexer
                 new SimpleField("spec_part", SearchFieldDataType.String) { IsFilterable = true, IsFacetable = true },
                 new SimpleField("spec_version", SearchFieldDataType.String) { IsFilterable = true },
                 new SearchableField("section_title"),
-                new SimpleField("content_type", SearchFieldDataType.String) { IsFilterable = true },
+                new SimpleField("content_type", SearchFieldDataType.String) { IsFilterable = true, IsFacetable = true },
                 new SimpleField("chunk_index", SearchFieldDataType.Int32) { IsSortable = true },
+                new SimpleField("node_class", SearchFieldDataType.String) { IsFilterable = true, IsFacetable = true },
+                new SimpleField("modelling_rule", SearchFieldDataType.String) { IsFilterable = true, IsFacetable = true },
             },
             SemanticSearch = new SemanticSearch
             {

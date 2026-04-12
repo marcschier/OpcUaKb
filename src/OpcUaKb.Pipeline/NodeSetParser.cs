@@ -102,6 +102,121 @@ sealed class OpcUaNodeSetParser
         return allDocs;
     }
 
+    /// <summary>
+    /// Generates per-spec and cross-spec summary documents from parsed NodeSet docs.
+    /// These summaries enable the KB to answer aggregation questions like
+    /// "how many ObjectTypes per companion spec?" without needing SQL-style queries.
+    /// </summary>
+    public static List<SearchDocument> GenerateSummaries(List<SearchDocument> nodesetDocs)
+    {
+        var summaries = new List<SearchDocument>();
+
+        // Group by spec_part
+        var bySpec = nodesetDocs
+            .Where(d => d.TryGetValue("content_type", out var ct) && ct?.ToString() == "nodeset")
+            .GroupBy(d => d["spec_part"]?.ToString() ?? "Unknown")
+            .OrderBy(g => g.Key)
+            .ToList();
+
+        var specStats = new List<(string spec, int objectTypes, int variableTypes, int variables,
+            int methods, int dataTypes, int mandatory, int optional, int total)>();
+
+        foreach (var group in bySpec)
+        {
+            var spec = group.Key;
+            var nodes = group.ToList();
+
+            int objectTypes = 0, variableTypes = 0, variables = 0, methods = 0, dataTypes = 0;
+            int mandatory = 0, optional = 0;
+
+            foreach (var node in nodes)
+            {
+                var nc = node.TryGetValue("node_class", out var ncVal) ? ncVal?.ToString() : "";
+                var mr = node.TryGetValue("modelling_rule", out var mrVal) ? mrVal?.ToString() : "";
+
+                switch (nc)
+                {
+                    case "ObjectType": objectTypes++; break;
+                    case "VariableType": variableTypes++; break;
+                    case "Variable": variables++; break;
+                    case "Method": methods++; break;
+                    case "DataType": dataTypes++; break;
+                }
+
+                if (mr == "Mandatory") mandatory++;
+                else if (mr == "Optional") optional++;
+            }
+
+            specStats.Add((spec, objectTypes, variableTypes, variables, methods, dataTypes,
+                mandatory, optional, nodes.Count));
+
+            // Per-spec summary
+            var sb = new StringBuilder();
+            sb.AppendLine($"NodeSet Summary for companion specification: {spec}");
+            sb.AppendLine($"Total nodes: {nodes.Count}");
+            sb.AppendLine($"ObjectTypes: {objectTypes}");
+            sb.AppendLine($"VariableTypes: {variableTypes}");
+            sb.AppendLine($"Variables: {variables} (Mandatory: {mandatory}, Optional: {optional})");
+            sb.AppendLine($"Methods: {methods}");
+            sb.AppendLine($"DataTypes: {dataTypes}");
+
+            var specId = $"summary-{spec.ToLowerInvariant().Replace(' ', '-')}";
+            summaries.Add(new SearchDocument(new Dictionary<string, object>
+            {
+                ["id"] = MakeId("summary", spec, specId),
+                ["page_chunk"] = sb.ToString(),
+                ["source_url"] = $"https://reference.opcfoundation.org/{spec}/",
+                ["spec_part"] = spec,
+                ["spec_version"] = "",
+                ["section_title"] = $"NodeSet Summary: {spec}",
+                ["content_type"] = "nodeset_summary",
+                ["chunk_index"] = 0,
+                ["node_class"] = "",
+                ["modelling_rule"] = "",
+            }));
+        }
+
+        // Cross-spec master summary
+        var master = new StringBuilder();
+        master.AppendLine("OPC UA Companion Specifications — NodeSet Statistics (all specs combined)");
+        master.AppendLine();
+        master.AppendLine($"Total companion specifications with NodeSet data: {specStats.Count}");
+        master.AppendLine($"Total nodes across all specs: {specStats.Sum(s => s.total)}");
+        master.AppendLine($"Total ObjectTypes: {specStats.Sum(s => s.objectTypes)}");
+        master.AppendLine($"Total VariableTypes: {specStats.Sum(s => s.variableTypes)}");
+        master.AppendLine($"Total Variables: {specStats.Sum(s => s.variables)} (Mandatory: {specStats.Sum(s => s.mandatory)}, Optional: {specStats.Sum(s => s.optional)})");
+        master.AppendLine($"Total Methods: {specStats.Sum(s => s.methods)}");
+        master.AppendLine($"Total DataTypes: {specStats.Sum(s => s.dataTypes)}");
+        master.AppendLine();
+        master.AppendLine("Top 20 companion specifications by ObjectType count:");
+        foreach (var (spec, ot, _, _, _, _, _, _, total) in specStats.OrderByDescending(s => s.objectTypes).Take(20))
+        {
+            master.AppendLine($"  {spec}: {ot} ObjectTypes ({total} total nodes)");
+        }
+        master.AppendLine();
+        master.AppendLine("Top 20 companion specifications by total Variable count:");
+        foreach (var (spec, _, _, vars, _, _, mand, opt, _) in specStats.OrderByDescending(s => s.variables).Take(20))
+        {
+            master.AppendLine($"  {spec}: {vars} Variables (Mandatory: {mand}, Optional: {opt})");
+        }
+
+        summaries.Add(new SearchDocument(new Dictionary<string, object>
+        {
+            ["id"] = MakeId("summary", "all-specs", "master"),
+            ["page_chunk"] = master.ToString(),
+            ["source_url"] = "https://reference.opcfoundation.org/",
+            ["spec_part"] = "AllSpecs",
+            ["spec_version"] = "",
+            ["section_title"] = "OPC UA NodeSet Statistics — All Companion Specifications",
+            ["content_type"] = "nodeset_summary",
+            ["chunk_index"] = 0,
+            ["node_class"] = "",
+            ["modelling_rule"] = "",
+        }));
+
+        return summaries;
+    }
+
     List<SearchDocument> ParseNodeSetXml(string xml, string blobName)
     {
         var xdoc = XDocument.Parse(xml);
@@ -192,6 +307,8 @@ sealed class OpcUaNodeSetParser
                 ["section_title"] = sectionTitle,
                 ["content_type"] = "nodeset",
                 ["chunk_index"] = chunkIdx++,
+                ["node_class"] = nodeClass,
+                ["modelling_rule"] = modellingRule,
             }));
         }
 
