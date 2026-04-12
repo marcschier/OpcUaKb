@@ -26,7 +26,9 @@ There are no unit tests — `OpcUaKb.Test` is a console app requiring live Azure
 - **Single solution** (`OpcUaKnowledgeBase.slnx`) with 6 projects under `src/`
 - **Pipeline** (`OpcUaKb.Pipeline`): Top-level statements, sealed classes, no explicit namespaces. Three phases: crawl → index → nodeset. Runs as Azure Container Apps Job on a weekly cron.
 - **Infrastructure**: `infra/main.bicep` (all Azure resources) + `infra/deploy.sh` (end-to-end deployment script using `az rest` for preview APIs)
-- **Index**: Azure AI Search `opcua-content-index` with `content_type` field distinguishing `html` vs `nodeset` docs
+- **Index**: Azure AI Search `opcua-content-index` with `content_type` field distinguishing `html`, `nodeset`, and `nodeset_summary` docs
+- **Structured fields**: NodeSet docs have `node_class` (ObjectType/Variable/Method/etc.) and `modelling_rule` (Mandatory/Optional) as filterable+facetable fields for aggregation queries
+- **Summary docs**: Pre-computed per-spec and cross-spec statistics (content_type=`nodeset_summary`) enable the KB to answer aggregation questions like "how many ObjectTypes per companion spec?"
 - **API version**: Azure AI Search agentic retrieval uses `2025-11-01-preview`. Knowledge sources use `kind: "web"` with `webParameters.domains.allowedDomains`.
 
 ## Azure Resource Configuration
