@@ -600,7 +600,7 @@ sealed class OpcUaIndexer
                 new SimpleField("spec_part", SearchFieldDataType.String) { IsFilterable = true, IsFacetable = true },
                 new SimpleField("spec_version", SearchFieldDataType.String) { IsFilterable = true },
                 new SearchableField("section_title"),
-                new SimpleField("content_type", SearchFieldDataType.String) { IsFilterable = true, IsFacetable = true },
+                new SimpleField("content_type", SearchFieldDataType.String) { IsFilterable = true },
                 new SimpleField("chunk_index", SearchFieldDataType.Int32) { IsSortable = true },
                 new SimpleField("node_class", SearchFieldDataType.String) { IsFilterable = true, IsFacetable = true },
                 new SimpleField("modelling_rule", SearchFieldDataType.String) { IsFilterable = true, IsFacetable = true },
