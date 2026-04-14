@@ -88,7 +88,7 @@ try
     if (nodesetDocs.Count > 0)
     {
         // Generate summary documents for aggregation queries
-        var summaryDocs = OpcUaNodeSetParser.GenerateSummaries(nodesetDocs);
+        var summaryDocs = nodesetParser.GenerateSummaries(nodesetDocs);
         log.LogInformation("[PIPELINE] Phase={Phase} Summaries={Count}", "nodeset-summary", summaryDocs.Count);
 
         // Combine nodeset + summary docs for upload
