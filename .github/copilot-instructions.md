@@ -9,6 +9,9 @@ dotnet build
 # Run the pipeline locally (requires env vars — see README.md "Manual Pipeline Run")
 dotnet run --project src/OpcUaKb.Pipeline
 
+# Run the custom MCP server (requires SEARCH_ENDPOINT and SEARCH_API_KEY)
+dotnet run --project src/OpcUaKb.McpServer
+
 # Run the chatbot (requires SEARCH_API_KEY and AOAI_API_KEY)
 dotnet run --project src/OpcUaKb.Chat
 
@@ -23,12 +26,15 @@ There are no unit tests — `OpcUaKb.Test` is a console app requiring live Azure
 
 ## Architecture
 
-- **Single solution** (`OpcUaKnowledgeBase.slnx`) with 6 projects under `src/`
+- **Single solution** (`OpcUaKnowledgeBase.slnx`) with 7 projects under `src/`
 - **Pipeline** (`OpcUaKb.Pipeline`): Top-level statements, sealed classes, no explicit namespaces. Three phases: crawl → index → nodeset. Runs as Azure Container Apps Job on a weekly cron.
+- **MCP Server** (`OpcUaKb.McpServer`): Custom MCP server with 5 tools (search_nodes, get_type_hierarchy, get_spec_summary, search_docs, count_nodes). Uses `ModelContextProtocol` SDK with stdio transport.
 - **Infrastructure**: `infra/main.bicep` (all Azure resources) + `infra/deploy.sh` (end-to-end deployment script using `az rest` for preview APIs)
-- **Index**: Azure AI Search `opcua-content-index` with `content_type` field distinguishing `html`, `nodeset`, and `nodeset_summary` docs
-- **Structured fields**: NodeSet docs have `node_class` (ObjectType/Variable/Method/etc.) and `modelling_rule` (Mandatory/Optional) as filterable+facetable fields for aggregation queries
-- **Summary docs**: Pre-computed per-spec and cross-spec statistics (content_type=`nodeset_summary`) enable the KB to answer aggregation questions like "how many ObjectTypes per companion spec?"
+- **Index**: Azure AI Search `opcua-content-index` with `content_type` field distinguishing `text`, `table`, `diagram`, `nodeset`, `nodeset_summary`, and `nodeset_hierarchy` docs
+- **Structured fields**: NodeSet docs have `node_class`, `modelling_rule`, `browse_name`, `parent_type`, and `data_type` as filterable fields for structured queries
+- **Summary docs**: Pre-computed per-spec and cross-spec statistics (content_type=`nodeset_summary`) enable the KB to answer aggregation questions
+- **Hierarchy docs**: Per-ObjectType documents (content_type=`nodeset_hierarchy`) with supertype chain, declared/inherited member counts
+- **Type hierarchy**: Cross-file ObjectType inheritance resolution with alias/namespace normalization, memoized supertype chain traversal, and completeness tracking
 - **API version**: Azure AI Search agentic retrieval uses `2025-11-01-preview`. Knowledge sources use `kind: "web"` with `webParameters.domains.allowedDomains`.
 
 ## Azure Resource Configuration
@@ -43,6 +49,7 @@ These are the **production values** — do not revert to lower defaults:
 | Container Apps Job timeout | `86400` (24 hours) | Full crawl + index takes ~17 hours |
 | Cron schedule | `0 2 * * 0` | Weekly Sunday 2am UTC |
 | Resource group | `rg-opcua-kb` | Region: eastus |
+| KB retrieval reasoning | `medium` | Upgraded from low for better query planning |
 
 ## HttpClient Usage — Critical Pattern
 
@@ -74,6 +81,14 @@ Pattern to follow:
 - Log failures with `[PHASE] Phase=X Error=Y` structured format for dashboard visibility
 - Track upload counts and compare against expected totals at phase end
 
+## Azure AI Search Schema — Keep In Sync
+
+The index schema is duplicated in two places and **must be kept in sync**:
+- `OpcUaKb.Pipeline/Program.cs` → `EnsureIndexAsync()`
+- `OpcUaKb.Indexer/Program.cs` → `CreateIndexAsync()`
+
+**Important**: Azure Search cannot change existing field attributes (e.g., adding `IsFacetable = true` to an already-created field). Only truly new fields can be added to an existing index.
+
 ## Azure AI Search Agentic Retrieval API
 
 The deploy script uses `az rest` for preview API operations. Key schema patterns:
@@ -103,9 +118,10 @@ https://{search}.search.windows.net/knowledgebases/{kb}/mcp?api-version=2025-11-
 ## Conventions
 
 - .NET 10, nullable enabled, implicit usings
-- Top-level statements for all console apps (Pipeline, Chat, Setup, Test)
+- Top-level statements for all console apps (Pipeline, Chat, Setup, Test, McpServer)
 - Sealed classes preferred
 - No explicit namespaces in Pipeline project
-- NuGet: `Azure.Search.Documents` 11.8.0-beta.1, `Azure.AI.OpenAI` 2.9.0-beta.1
+- NuGet: `Azure.Search.Documents` 11.8.0-beta.1, `Azure.AI.OpenAI` 2.9.0-beta.1, `ModelContextProtocol` 1.2.0
 - Structured logging: `[PHASE] Key=Value` format for KQL dashboard queries
 - Pipeline status tracked in `_pipeline-status.json` blob
+- MCP server uses static tool classes with `[McpServerToolType]` / `[McpServerTool]` attributes
