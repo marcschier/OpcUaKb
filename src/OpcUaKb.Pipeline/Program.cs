@@ -604,6 +604,9 @@ sealed class OpcUaIndexer
                 new SimpleField("chunk_index", SearchFieldDataType.Int32) { IsSortable = true },
                 new SimpleField("node_class", SearchFieldDataType.String) { IsFilterable = true, IsFacetable = true },
                 new SimpleField("modelling_rule", SearchFieldDataType.String) { IsFilterable = true, IsFacetable = true },
+                new SimpleField("browse_name", SearchFieldDataType.String) { IsFilterable = true },
+                new SimpleField("parent_type", SearchFieldDataType.String) { IsFilterable = true },
+                new SimpleField("data_type", SearchFieldDataType.String) { IsFilterable = true, IsFacetable = true },
             },
             SemanticSearch = new SemanticSearch
             {

@@ -254,6 +254,9 @@ sealed class OpcUaNodeSetParser
                 ["chunk_index"] = 0,
                 ["node_class"] = "",
                 ["modelling_rule"] = "",
+                ["browse_name"] = "",
+                ["parent_type"] = "",
+                ["data_type"] = "",
             }));
         }
 
@@ -319,7 +322,65 @@ sealed class OpcUaNodeSetParser
             ["chunk_index"] = 0,
             ["node_class"] = "",
             ["modelling_rule"] = "",
+            ["browse_name"] = "",
+            ["parent_type"] = "",
+            ["data_type"] = "",
         }));
+
+        // Per-ObjectType hierarchy documents for structured lookup
+        foreach (var t in _typeRegistry.Values.Where(t => t.TotalComputed))
+        {
+            var total = t.TotalVariables + t.TotalMethods + t.TotalObjects;
+            var declared = t.DeclaredVariables + t.DeclaredMethods + t.DeclaredObjects;
+            var inherited = total - declared;
+            var completeness = t.HierarchyComplete ? "complete" : "partial (missing supertype data)";
+
+            // Build supertype chain text
+            var chain = new List<string>();
+            var current = t;
+            var visited = new HashSet<string>();
+            while (current?.SupertypeGlobalId != null && visited.Add(current.SupertypeGlobalId))
+            {
+                if (_typeRegistry.TryGetValue(current.SupertypeGlobalId, out var super))
+                {
+                    chain.Add($"{super.BrowseName} ({super.Spec})");
+                    current = super;
+                }
+                else
+                {
+                    chain.Add("[unknown supertype]");
+                    break;
+                }
+            }
+
+            var hb = new StringBuilder();
+            hb.AppendLine($"ObjectType: {t.BrowseName} (Companion Spec: {t.Spec})");
+            if (chain.Count > 0)
+                hb.AppendLine($"Supertype chain: {string.Join(" → ", chain)}");
+            else
+                hb.AppendLine("Supertype chain: (none / root type)");
+            hb.AppendLine($"Hierarchy status: {completeness}");
+            hb.AppendLine($"Declared members: {declared} ({t.DeclaredVariables} Variables, {t.DeclaredMethods} Methods, {t.DeclaredObjects} Objects)");
+            hb.AppendLine($"Inherited members: {inherited}");
+            hb.AppendLine($"Total members (declared + inherited): {total} ({t.TotalVariables} Variables, {t.TotalMethods} Methods, {t.TotalObjects} Objects)");
+
+            summaries.Add(new SearchDocument(new Dictionary<string, object>
+            {
+                ["id"] = MakeId("hierarchy", t.Spec, t.BrowseName),
+                ["page_chunk"] = hb.ToString(),
+                ["source_url"] = $"https://reference.opcfoundation.org/{t.Spec}/",
+                ["spec_part"] = t.Spec,
+                ["spec_version"] = "",
+                ["section_title"] = t.BrowseName,
+                ["content_type"] = "nodeset_hierarchy",
+                ["chunk_index"] = 0,
+                ["node_class"] = "ObjectType",
+                ["modelling_rule"] = "",
+                ["browse_name"] = t.BrowseName,
+                ["parent_type"] = chain.Count > 0 ? chain[0] : "",
+                ["data_type"] = "",
+            }));
+        }
 
         return summaries;
     }
@@ -478,6 +539,9 @@ sealed class OpcUaNodeSetParser
                 ["chunk_index"] = chunkIdx++,
                 ["node_class"] = nodeClass,
                 ["modelling_rule"] = modellingRule,
+                ["browse_name"] = browseName,
+                ["parent_type"] = parentType,
+                ["data_type"] = StripNamespacePrefix(dataType),
             }));
         }
 
@@ -688,19 +752,31 @@ sealed class OpcUaNodeSetParser
         return $"blob://{ContainerName}/{blobName}";
     }
 
+    // Known blob path prefixes that produce unhelpful spec names
+    static readonly Dictionary<string, string> SpecNameOverrides = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["api"] = "CoreNodeSets",
+        ["files_opcfoundation_org"] = "LegacyNodeSets",
+        ["files.opcfoundation.org"] = "LegacyNodeSets",
+    };
+
     static string ExtractSpecName(string namespaceUri, string blobName)
     {
         // Try namespace URI first: http://opcfoundation.org/UA/DI/ → "DI"
         var m = Regex.Match(namespaceUri, @"opcfoundation\.org/UA/([^/]+)");
         if (m.Success) return m.Groups[1].Value;
 
-        // Fall back to blob path segments
+        // Fall back to blob path segments with override normalization
         var segments = blobName.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries);
         foreach (var seg in segments)
         {
             if (seg.Contains("nodeset", StringComparison.OrdinalIgnoreCase)) continue;
             if (seg.EndsWith(".xml", StringComparison.OrdinalIgnoreCase)) continue;
-            if (!string.IsNullOrWhiteSpace(seg) && seg.Length > 1) return seg;
+            if (!string.IsNullOrWhiteSpace(seg) && seg.Length > 1)
+            {
+                // Apply override if this is a known unhelpful name
+                return SpecNameOverrides.GetValueOrDefault(seg, seg);
+            }
         }
 
         return "Unknown";

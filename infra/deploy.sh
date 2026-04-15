@@ -176,10 +176,10 @@ HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PUT \
         }
       }
     ],
-    \"retrievalReasoningEffort\": { \"kind\": \"low\" },
+    \"retrievalReasoningEffort\": { \"kind\": \"medium\" },
     \"outputMode\": \"answerSynthesis\",
-    \"retrievalInstructions\": \"Use the OPC UA web knowledge source to answer questions about OPC UA specifications. This source covers all OPC 10000 specification parts, companion specifications, and NodeSet definitions.\",
-    \"answerInstructions\": \"Provide technically precise answers grounded in the OPC UA specifications. Include specification part numbers and section references. When generating code, use the OPC UA .NET Standard SDK conventions. Format code blocks with C# syntax.\"
+    \"retrievalInstructions\": \"Use the OPC UA indexed knowledge source for detailed specification content including tables, diagrams, and code examples. Use the OPC UA web knowledge source for real-time lookups and content that may not yet be indexed. Both sources cover OPC 10000 specification parts (1-26+), companion specifications, and NodeSet definitions. The index contains structured NodeSet data with filterable fields: node_class, modelling_rule, spec_part, browse_name, parent_type, data_type. Summary documents (content_type=nodeset_summary) provide pre-computed per-spec and cross-spec statistics. Hierarchy documents (content_type=nodeset_hierarchy) provide per-ObjectType inheritance chains and member counts.\",
+    \"answerInstructions\": \"Provide technically precise answers grounded in the OPC UA specifications. Include specification part numbers and section references when available. When generating code, use the OPC UA .NET Standard SDK conventions. For protocol-level questions, cite the exact service names and parameter structures. For aggregation questions (counts, comparisons), use nodeset_summary documents. For type hierarchy questions, use nodeset_hierarchy documents. Format code blocks with C# syntax.\"
   }")
   }")
 
