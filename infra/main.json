@@ -1,0 +1,434 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "languageVersion": "2.0",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.36.1.42791",
+      "templateHash": "16064647189946878001"
+    }
+  },
+  "parameters": {
+    "prefix": {
+      "type": "string",
+      "defaultValue": "opcua-kb",
+      "minLength": 3,
+      "metadata": {
+        "description": "Prefix used to derive all resource names"
+      }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "Azure region for all resources"
+      }
+    },
+    "gptModelVersion": {
+      "type": "string",
+      "defaultValue": "2024-11-20",
+      "metadata": {
+        "description": "GPT-4o model version"
+      }
+    },
+    "pipelineImage": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Container image for the pipeline job (empty = placeholder)"
+      }
+    },
+    "cronSchedule": {
+      "type": "string",
+      "defaultValue": "0 2 * * 0",
+      "metadata": {
+        "description": "Cron schedule for the pipeline job"
+      }
+    }
+  },
+  "variables": {
+    "searchName": "[format('{0}-search', parameters('prefix'))]",
+    "openaiName": "[format('{0}-openai', parameters('prefix'))]",
+    "storageName": "[take(replace(format('{0}storage', parameters('prefix')), '-', ''), 24)]",
+    "docaiName": "[format('{0}-docai', parameters('prefix'))]",
+    "acrName": "[replace(format('{0}registry', parameters('prefix')), '-', '')]",
+    "envName": "[format('{0}-env', parameters('prefix'))]",
+    "jobName": "[format('{0}-pipeline-job', parameters('prefix'))]",
+    "logAnalyticsName": "[format('{0}-logs', parameters('prefix'))]",
+    "workbookName": "[guid(resourceGroup().id, 'opcua-pipeline-dashboard')]",
+    "containerImage": "[if(empty(parameters('pipelineImage')), 'mcr.microsoft.com/dotnet/runtime:9.0', parameters('pipelineImage'))]",
+    "mcpAppName": "[format('{0}-mcp-server', parameters('prefix'))]",
+    "cognitiveServicesUserRole": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'a97b65f3-24c7-4388-baec-2e87135dc908')]",
+    "workbookContent": "{\"version\":\"Notebook/1.0\",\"items\":[{\"type\":1,\"content\":{\"json\":\"# OPC UA Knowledge Base Pipeline Dashboard\\n\\nMonitors crawl + index pipeline for reference.opcfoundation.org\"},\"name\":\"header\"},{\"type\":3,\"content\":{\"version\":\"KqlItem/1.0\",\"query\":\"ContainerAppConsoleLogs_CL\\n| where ContainerGroupName_s startswith \\\"opcua-pipeline-job\\\"\\n| where Log_s has \\\"[PIPELINE]\\\"\\n| parse Log_s with * \\\"Phase=\\\" Phase:string \\\" Status=\\\" Status:string \\\" \\\" *\\n| project TimeGenerated, Phase, Status\\n| order by TimeGenerated desc\\n| take 20\",\"size\":1,\"title\":\"Recent Pipeline Events\",\"timeContext\":{\"durationMs\":604800000},\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\"},\"name\":\"pipeline-events\"},{\"type\":3,\"content\":{\"version\":\"KqlItem/1.0\",\"query\":\"ContainerAppConsoleLogs_CL\\n| where ContainerGroupName_s startswith \\\"opcua-pipeline-job\\\"\\n| where Log_s has \\\"[CRAWL]\\\" and Log_s has \\\"Downloaded=\\\"\\n| parse Log_s with * \\\"Downloaded=\\\" Downloaded:long \\\" Skipped=\\\" Skipped:long \\\" Errors=\\\" Errors:long \\\" Queued=\\\" Queued:long\\n| project TimeGenerated, Downloaded, Skipped, Errors, Queued\\n| order by TimeGenerated asc\",\"size\":0,\"title\":\"Crawl Progress Over Time\",\"timeContext\":{\"durationMs\":86400000},\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\",\"visualization\":\"linechart\",\"chartSettings\":{\"yAxis\":[\"Downloaded\",\"Queued\",\"Errors\"]}},\"name\":\"crawl-progress\"},{\"type\":3,\"content\":{\"version\":\"KqlItem/1.0\",\"query\":\"ContainerAppConsoleLogs_CL\\n| where ContainerGroupName_s startswith \\\"opcua-pipeline-job\\\"\\n| where Log_s has \\\"[CRAWL]\\\" and Log_s has \\\"Downloaded=\\\"\\n| parse Log_s with * \\\"Downloaded=\\\" Downloaded:long \\\" Skipped=\\\" Skipped:long \\\" Errors=\\\" Errors:long *\\n| summarize MaxDownloaded=max(Downloaded), MaxSkipped=max(Skipped), TotalErrors=max(Errors) by bin(TimeGenerated, 1h)\\n| order by TimeGenerated desc\\n| take 1\",\"size\":4,\"title\":\"Latest Crawl Stats\",\"timeContext\":{\"durationMs\":86400000},\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\",\"visualization\":\"tiles\",\"tileSettings\":{\"showBorder\":true}},\"name\":\"crawl-stats\"},{\"type\":3,\"content\":{\"version\":\"KqlItem/1.0\",\"query\":\"ContainerAppConsoleLogs_CL\\n| where ContainerGroupName_s startswith \\\"opcua-pipeline-job\\\"\\n| where Log_s has \\\"[INDEX]\\\" and Log_s has \\\"Phase=\\\"\\n| parse Log_s with * \\\"Phase=\\\" Phase:string \\\" \\\" *\\n| extend Embedded = extract(\\\"Embedded=([0-9]+)\\\", 1, Log_s)\\n| extend Uploaded = extract(\\\"Uploaded=([0-9]+)\\\", 1, Log_s)\\n| extend Chunks = extract(\\\"Chunks=([0-9]+)\\\", 1, Log_s)\\n| extend Parsed = extract(\\\"Parsed=([0-9]+)\\\", 1, Log_s)\\n| project TimeGenerated, Phase, Parsed, Chunks, Embedded, Uploaded\\n| order by TimeGenerated asc\",\"size\":0,\"title\":\"Index Progress Over Time\",\"timeContext\":{\"durationMs\":86400000},\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\",\"visualization\":\"linechart\"},\"name\":\"index-progress\"},{\"type\":3,\"content\":{\"version\":\"KqlItem/1.0\",\"query\":\"ContainerAppConsoleLogs_CL\\n| where ContainerGroupName_s startswith \\\"opcua-pipeline-job\\\"\\n| where Log_s has \\\"Error=\\\" or Log_s has \\\"error\\\" or Log_s has \\\"Warning\\\"\\n| project TimeGenerated, Log_s\\n| order by TimeGenerated desc\\n| take 50\",\"size\":1,\"title\":\"Errors & Warnings\",\"timeContext\":{\"durationMs\":604800000},\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\",\"visualization\":\"table\"},\"name\":\"errors\"},{\"type\":3,\"content\":{\"version\":\"KqlItem/1.0\",\"query\":\"ContainerAppConsoleLogs_CL\\n| where ContainerGroupName_s startswith \\\"opcua-pipeline-job\\\"\\n| where Log_s has \\\"[PIPELINE]\\\" and Log_s has \\\"TotalElapsedSec=\\\"\\n| parse Log_s with * \\\"TotalElapsedSec=\\\" ElapsedSec:long\\n| project TimeGenerated, DurationMin=ElapsedSec/60.0\\n| order by TimeGenerated desc\\n| take 10\",\"size\":1,\"title\":\"Execution History (Duration in Minutes)\",\"timeContext\":{\"durationMs\":2592000000},\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\",\"visualization\":\"barchart\"},\"name\":\"exec-history\"}],\"isLocked\":false}\r\n"
+  },
+  "resources": {
+    "search": {
+      "type": "Microsoft.Search/searchServices",
+      "apiVersion": "2024-06-01-preview",
+      "name": "[variables('searchName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "standard"
+      },
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "hostingMode": "default",
+        "semanticSearch": "standard",
+        "replicaCount": 1,
+        "partitionCount": 1
+      }
+    },
+    "openai": {
+      "type": "Microsoft.CognitiveServices/accounts",
+      "apiVersion": "2024-10-01",
+      "name": "[variables('openaiName')]",
+      "location": "[parameters('location')]",
+      "kind": "OpenAI",
+      "sku": {
+        "name": "S0"
+      },
+      "properties": {
+        "customSubDomainName": "[variables('openaiName')]",
+        "publicNetworkAccess": "Enabled"
+      }
+    },
+    "gpt4oDeployment": {
+      "type": "Microsoft.CognitiveServices/accounts/deployments",
+      "apiVersion": "2024-10-01",
+      "name": "[format('{0}/{1}', variables('openaiName'), 'gpt-4o')]",
+      "sku": {
+        "name": "Standard",
+        "capacity": 30
+      },
+      "properties": {
+        "model": {
+          "format": "OpenAI",
+          "name": "gpt-4o",
+          "version": "[parameters('gptModelVersion')]"
+        }
+      },
+      "dependsOn": [
+        "openai"
+      ]
+    },
+    "embeddingDeployment": {
+      "type": "Microsoft.CognitiveServices/accounts/deployments",
+      "apiVersion": "2024-10-01",
+      "name": "[format('{0}/{1}', variables('openaiName'), 'text-embedding-3-large')]",
+      "sku": {
+        "name": "Standard",
+        "capacity": 120
+      },
+      "properties": {
+        "model": {
+          "format": "OpenAI",
+          "name": "text-embedding-3-large",
+          "version": "1"
+        }
+      },
+      "dependsOn": [
+        "gpt4oDeployment",
+        "openai"
+      ]
+    },
+    "storageAccount": {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-05-01",
+      "name": "[variables('storageName')]",
+      "location": "[parameters('location')]",
+      "kind": "StorageV2",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "properties": {
+        "minimumTlsVersion": "TLS1_2",
+        "allowBlobPublicAccess": false,
+        "supportsHttpsTrafficOnly": true
+      }
+    },
+    "docai": {
+      "type": "Microsoft.CognitiveServices/accounts",
+      "apiVersion": "2024-10-01",
+      "name": "[variables('docaiName')]",
+      "location": "[parameters('location')]",
+      "kind": "FormRecognizer",
+      "sku": {
+        "name": "S0"
+      },
+      "properties": {
+        "customSubDomainName": "[variables('docaiName')]",
+        "publicNetworkAccess": "Enabled"
+      }
+    },
+    "acr": {
+      "type": "Microsoft.ContainerRegistry/registries",
+      "apiVersion": "2023-11-01-preview",
+      "name": "[variables('acrName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Basic"
+      },
+      "properties": {
+        "adminUserEnabled": true
+      }
+    },
+    "logAnalytics": {
+      "type": "Microsoft.OperationalInsights/workspaces",
+      "apiVersion": "2023-09-01",
+      "name": "[variables('logAnalyticsName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "sku": {
+          "name": "PerGB2018"
+        },
+        "retentionInDays": 30
+      }
+    },
+    "containerEnv": {
+      "type": "Microsoft.App/managedEnvironments",
+      "apiVersion": "2024-03-01",
+      "name": "[variables('envName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "appLogsConfiguration": {
+          "destination": "log-analytics",
+          "logAnalyticsConfiguration": {
+            "customerId": "[reference('logAnalytics').customerId]",
+            "sharedKey": "[listKeys('logAnalytics', '2023-09-01').primarySharedKey]"
+          }
+        }
+      },
+      "dependsOn": [
+        "logAnalytics"
+      ]
+    },
+    "pipelineJob": {
+      "type": "Microsoft.App/jobs",
+      "apiVersion": "2024-03-01",
+      "name": "[variables('jobName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "environmentId": "[resourceId('Microsoft.App/managedEnvironments', variables('envName'))]",
+        "configuration": {
+          "triggerType": "Schedule",
+          "scheduleTriggerConfig": {
+            "cronExpression": "[parameters('cronSchedule')]",
+            "parallelism": 1,
+            "replicaCompletionCount": 1
+          },
+          "replicaTimeout": 86400,
+          "registries": [
+            {
+              "server": "[reference('acr').loginServer]",
+              "username": "[listCredentials('acr', '2023-11-01-preview').username]",
+              "passwordSecretRef": "acr-password"
+            }
+          ],
+          "secrets": [
+            {
+              "name": "acr-password",
+              "value": "[listCredentials('acr', '2023-11-01-preview').passwords[0].value]"
+            },
+            {
+              "name": "storage-connection-string",
+              "value": "[format('DefaultEndpointsProtocol=https;AccountName={0};AccountKey={1};EndpointSuffix={2}', variables('storageName'), listKeys('storageAccount', '2023-05-01').keys[0].value, environment().suffixes.storage)]"
+            },
+            {
+              "name": "search-api-key",
+              "value": "[listAdminKeys('search', '2024-06-01-preview').primaryKey]"
+            },
+            {
+              "name": "aoai-api-key",
+              "value": "[listKeys('openai', '2024-10-01').key1]"
+            }
+          ]
+        },
+        "template": {
+          "containers": [
+            {
+              "name": "pipeline",
+              "image": "[variables('containerImage')]",
+              "resources": {
+                "cpu": "[json('2')]",
+                "memory": "4Gi"
+              },
+              "env": [
+                {
+                  "name": "STORAGE_CONNECTION_STRING",
+                  "secretRef": "storage-connection-string"
+                },
+                {
+                  "name": "SEARCH_ENDPOINT",
+                  "value": "[format('https://{0}.search.windows.net', variables('searchName'))]"
+                },
+                {
+                  "name": "SEARCH_API_KEY",
+                  "secretRef": "search-api-key"
+                },
+                {
+                  "name": "AOAI_ENDPOINT",
+                  "value": "[reference('openai').endpoint]"
+                },
+                {
+                  "name": "AOAI_API_KEY",
+                  "secretRef": "aoai-api-key"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "dependsOn": [
+        "acr",
+        "containerEnv",
+        "openai",
+        "search",
+        "storageAccount"
+      ]
+    },
+    "mcpServer": {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2024-03-01",
+      "name": "[variables('mcpAppName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "environmentId": "[resourceId('Microsoft.App/managedEnvironments', variables('envName'))]",
+        "configuration": {
+          "activeRevisionsMode": "Single",
+          "ingress": {
+            "external": true,
+            "targetPort": 8080,
+            "transport": "http",
+            "allowInsecure": false
+          },
+          "registries": [
+            {
+              "server": "[reference('acr').loginServer]",
+              "username": "[listCredentials('acr', '2023-11-01-preview').username]",
+              "passwordSecretRef": "acr-password"
+            }
+          ],
+          "secrets": [
+            {
+              "name": "acr-password",
+              "value": "[listCredentials('acr', '2023-11-01-preview').passwords[0].value]"
+            },
+            {
+              "name": "search-api-key",
+              "value": "[listAdminKeys('search', '2024-06-01-preview').primaryKey]"
+            }
+          ]
+        },
+        "template": {
+          "containers": [
+            {
+              "name": "mcp-server",
+              "image": "[if(empty(parameters('pipelineImage')), 'mcr.microsoft.com/dotnet/aspnet:10.0', format('{0}/opcua-mcp-server:latest', reference('acr').loginServer))]",
+              "resources": {
+                "cpu": "[json('0.25')]",
+                "memory": "0.5Gi"
+              },
+              "env": [
+                {
+                  "name": "SEARCH_ENDPOINT",
+                  "value": "[format('https://{0}.search.windows.net', variables('searchName'))]"
+                },
+                {
+                  "name": "SEARCH_API_KEY",
+                  "secretRef": "search-api-key"
+                }
+              ]
+            }
+          ],
+          "scale": {
+            "minReplicas": 0,
+            "maxReplicas": 2,
+            "rules": [
+              {
+                "name": "http-rule",
+                "http": {
+                  "metadata": {
+                    "concurrentRequests": "5"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      "dependsOn": [
+        "acr",
+        "containerEnv",
+        "search"
+      ]
+    },
+    "searchOpenaiRoleAssignment": {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[format('Microsoft.CognitiveServices/accounts/{0}', variables('openaiName'))]",
+      "name": "[guid(resourceId('Microsoft.Search/searchServices', variables('searchName')), resourceId('Microsoft.CognitiveServices/accounts', variables('openaiName')), variables('cognitiveServicesUserRole'))]",
+      "properties": {
+        "principalId": "[reference('search', '2024-06-01-preview', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal",
+        "roleDefinitionId": "[variables('cognitiveServicesUserRole')]"
+      },
+      "dependsOn": [
+        "openai",
+        "search"
+      ]
+    },
+    "workbook": {
+      "type": "Microsoft.Insights/workbooks",
+      "apiVersion": "2022-04-01",
+      "name": "[variables('workbookName')]",
+      "location": "[parameters('location')]",
+      "kind": "shared",
+      "properties": {
+        "displayName": "OPC UA Pipeline Dashboard",
+        "category": "workbook",
+        "sourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logAnalyticsName'))]",
+        "serializedData": "[variables('workbookContent')]"
+      },
+      "dependsOn": [
+        "logAnalytics"
+      ]
+    }
+  },
+  "outputs": {
+    "searchEndpoint": {
+      "type": "string",
+      "value": "[format('https://{0}.search.windows.net', variables('searchName'))]"
+    },
+    "searchApiKey": {
+      "type": "securestring",
+      "value": "[listAdminKeys('search', '2024-06-01-preview').primaryKey]"
+    },
+    "aoaiEndpoint": {
+      "type": "string",
+      "value": "[reference('openai').endpoint]"
+    },
+    "aoaiApiKey": {
+      "type": "securestring",
+      "value": "[listKeys('openai', '2024-10-01').key1]"
+    },
+    "storageConnectionString": {
+      "type": "securestring",
+      "value": "[format('DefaultEndpointsProtocol=https;AccountName={0};AccountKey={1};EndpointSuffix={2}', variables('storageName'), listKeys('storageAccount', '2023-05-01').keys[0].value, environment().suffixes.storage)]"
+    },
+    "acrLoginServer": {
+      "type": "string",
+      "value": "[reference('acr').loginServer]"
+    },
+    "mcpEndpoint": {
+      "type": "string",
+      "value": "[format('https://{0}.search.windows.net/knowledgebases/{1}-kb/mcp?api-version=2025-11-01-preview', variables('searchName'), parameters('prefix'))]"
+    },
+    "mcpServerEndpoint": {
+      "type": "string",
+      "value": "[format('https://{0}', reference('mcpServer').configuration.ingress.fqdn)]"
+    }
+  }
+}

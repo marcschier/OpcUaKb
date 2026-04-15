@@ -9,7 +9,6 @@ on:
 env:
   DOTNET_VERSION: '10.0.x'
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository_owner }}/opcua-pipeline
 
 permissions:
   contents: read
@@ -37,10 +36,17 @@ jobs:
         # Note: OpcUaKb.Test is a console app that requires SEARCH_API_KEY at runtime.
         # This step validates it compiles. Integration tests run separately.
 
-  publish-container:
+  publish-containers:
     needs: build-and-test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - image: opcua-pipeline
+            dockerfile: Dockerfile
+          - image: opcua-mcp-server
+            dockerfile: Dockerfile.mcpserver
     steps:
       - uses: actions/checkout@v4
 
@@ -55,7 +61,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }}
           tags: |
             type=sha,prefix=
             type=raw,value=latest
@@ -65,7 +71,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Dockerfile
+          file: ./${{ matrix.dockerfile }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

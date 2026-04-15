@@ -116,6 +116,18 @@ az acr build \
   --no-logs || fail "ACR build failed. Ensure the Dockerfile is valid."
 ok "Container image pushed: ${IMAGE_TAG}"
 
+# ── Step 4b: Build and push MCP server image to ACR ──────────────────
+MCP_IMAGE_TAG="${ACR_LOGIN_SERVER}/opcua-mcp-server:latest"
+info "Building and pushing MCP server image to ACR..."
+az acr build \
+  --registry "$ACR_NAME" \
+  --resource-group "$RESOURCE_GROUP" \
+  --image "opcua-mcp-server:latest" \
+  --file "${REPO_ROOT}/Dockerfile.mcpserver" \
+  "${REPO_ROOT}" \
+  --no-logs || fail "MCP server ACR build failed."
+ok "MCP server image pushed: ${MCP_IMAGE_TAG}"
+
 # ── Step 5: Update Container Apps Job with the real image ────────────
 info "Updating Container Apps Job with new image..."
 az containerapp job update \
@@ -124,6 +136,20 @@ az containerapp job update \
   --image "$IMAGE_TAG" \
   --output none || fail "Failed to update Container Apps Job."
 ok "Pipeline job updated."
+
+# ── Step 5b: Update MCP server Container App ─────────────────────────
+MCP_APP_NAME="${PREFIX}-mcp-server"
+info "Updating MCP server Container App..."
+az containerapp update \
+  --name "$MCP_APP_NAME" \
+  --resource-group "$RESOURCE_GROUP" \
+  --image "$MCP_IMAGE_TAG" \
+  --output none || fail "Failed to update MCP server Container App."
+MCP_SERVER_FQDN=$(az containerapp show \
+  --name "$MCP_APP_NAME" \
+  --resource-group "$RESOURCE_GROUP" \
+  --query "properties.configuration.ingress.fqdn" -o tsv)
+ok "MCP server updated: https://${MCP_SERVER_FQDN}"
 
 # ── Step 6: Create Web Knowledge Source ──────────────────────────────
 info "Creating web knowledge source..."
@@ -213,9 +239,10 @@ echo -e "  Resource Group:   ${BLUE}${RESOURCE_GROUP}${NC}"
 echo -e "  Search Endpoint:  ${BLUE}${SEARCH_ENDPOINT}${NC}"
 echo -e "  OpenAI Endpoint:  ${BLUE}${AOAI_ENDPOINT}${NC}"
 echo -e "  ACR Server:       ${BLUE}${ACR_LOGIN_SERVER}${NC}"
-echo -e "  MCP Endpoint:     ${BLUE}${MCP_ENDPOINT}${NC}"
+echo -e "  KB MCP Endpoint:  ${BLUE}${MCP_ENDPOINT}${NC}"
+echo -e "  MCP Server:       ${BLUE}https://${MCP_SERVER_FQDN}${NC}"
 echo ""
-echo -e "  ${YELLOW}To configure GitHub Copilot CLI with this knowledge base:${NC}"
+echo -e "  ${YELLOW}To configure GitHub Copilot CLI:${NC}"
 echo ""
 echo -e "  Add to ~/.copilot/mcp.json:"
 echo ""
@@ -227,6 +254,10 @@ echo -e "          \"url\": \"${MCP_ENDPOINT}\","
 echo -e "          \"headers\": {"
 echo -e "            \"api-key\": \"<your-search-api-key>\""
 echo -e "          }"
+echo -e "        },"
+echo -e "        \"opcua-kb-tools\": {"
+echo -e "          \"type\": \"http\","
+echo -e "          \"url\": \"https://${MCP_SERVER_FQDN}/mcp\""
 echo -e "        }"
 echo -e "      }"
 echo -e "    }"

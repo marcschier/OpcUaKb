@@ -154,10 +154,18 @@ https://<prefix>-search.search.windows.net/knowledgebases/<prefix>-kb/mcp?api-ve
 
 ### Custom MCP Server (structured tools)
 
-Runs locally via stdio transport. Requires `SEARCH_ENDPOINT` and `SEARCH_API_KEY` environment variables.
+Hosted on Azure Container Apps with scale-to-zero (0–2 replicas, HTTP auto-scale at 5 concurrent requests).
+
+```
+https://<mcp-server-fqdn>/
+```
+
+Can also run locally via stdio transport for development:
 
 ```bash
-dotnet run --project src/OpcUaKb.McpServer
+SEARCH_ENDPOINT=https://<prefix>-search.search.windows.net \
+SEARCH_API_KEY=<key> \
+dotnet run --project src/OpcUaKb.McpServer -- --stdio
 ```
 
 ### Configure in GitHub Copilot CLI
@@ -175,12 +183,8 @@ Add to `~/.copilot/mcp.json`:
       }
     },
     "opcua-kb-tools": {
-      "command": "dotnet",
-      "args": ["run", "--project", "<path-to-repo>/src/OpcUaKb.McpServer"],
-      "env": {
-        "SEARCH_ENDPOINT": "https://<prefix>-search.search.windows.net",
-        "SEARCH_API_KEY": "<your-search-api-key>"
-      }
+      "type": "http",
+      "url": "https://<mcp-server-fqdn>/"
     }
   }
 }

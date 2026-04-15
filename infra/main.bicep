@@ -242,7 +242,81 @@ resource pipelineJob 'Microsoft.App/jobs@2024-03-01' = {
   }
 }
 
-// ── 8. Role assignment — Search → OpenAI (Cognitive Services User) ──
+// ── 8. MCP Server Container App ─────────────────────────────────────
+var mcpAppName = '${prefix}-mcp-server'
+var mcpImage = empty(pipelineImage) ? 'mcr.microsoft.com/dotnet/aspnet:10.0' : '${acr.properties.loginServer}/opcua-mcp-server:latest'
+
+resource mcpServer 'Microsoft.App/containerApps@2024-03-01' = {
+  name: mcpAppName
+  location: location
+  properties: {
+    environmentId: containerEnv.id
+    configuration: {
+      activeRevisionsMode: 'Single'
+      ingress: {
+        external: true
+        targetPort: 8080
+        transport: 'http'
+        allowInsecure: false
+      }
+      registries: [
+        {
+          server: acr.properties.loginServer
+          username: acr.listCredentials().username
+          passwordSecretRef: 'acr-password'
+        }
+      ]
+      secrets: [
+        {
+          name: 'acr-password'
+          value: acr.listCredentials().passwords[0].value
+        }
+        {
+          name: 'search-api-key'
+          value: search.listAdminKeys().primaryKey
+        }
+      ]
+    }
+    template: {
+      containers: [
+        {
+          name: 'mcp-server'
+          image: mcpImage
+          resources: {
+            cpu: json('0.25')
+            memory: '0.5Gi'
+          }
+          env: [
+            {
+              name: 'SEARCH_ENDPOINT'
+              value: 'https://${search.name}.search.windows.net'
+            }
+            {
+              name: 'SEARCH_API_KEY'
+              secretRef: 'search-api-key'
+            }
+          ]
+        }
+      ]
+      scale: {
+        minReplicas: 0
+        maxReplicas: 2
+        rules: [
+          {
+            name: 'http-rule'
+            http: {
+              metadata: {
+                concurrentRequests: '5'
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}
+
+// ── 9. Role assignment — Search → OpenAI (Cognitive Services User) ──
 var cognitiveServicesUserRole = subscriptionResourceId(
   'Microsoft.Authorization/roleDefinitions',
   'a97b65f3-24c7-4388-baec-2e87135dc908'
@@ -258,7 +332,7 @@ resource searchOpenaiRoleAssignment 'Microsoft.Authorization/roleAssignments@202
   }
 }
 
-// ── 9. Azure Monitor Workbook ───────────────────────────────────────
+// ── 10. Azure Monitor Workbook ───────────────────────────────────────
 var workbookContent = '''
 {"version":"Notebook/1.0","items":[{"type":1,"content":{"json":"# OPC UA Knowledge Base Pipeline Dashboard\n\nMonitors crawl + index pipeline for reference.opcfoundation.org"},"name":"header"},{"type":3,"content":{"version":"KqlItem/1.0","query":"ContainerAppConsoleLogs_CL\n| where ContainerGroupName_s startswith \"opcua-pipeline-job\"\n| where Log_s has \"[PIPELINE]\"\n| parse Log_s with * \"Phase=\" Phase:string \" Status=\" Status:string \" \" *\n| project TimeGenerated, Phase, Status\n| order by TimeGenerated desc\n| take 20","size":1,"title":"Recent Pipeline Events","timeContext":{"durationMs":604800000},"queryType":0,"resourceType":"microsoft.operationalinsights/workspaces"},"name":"pipeline-events"},{"type":3,"content":{"version":"KqlItem/1.0","query":"ContainerAppConsoleLogs_CL\n| where ContainerGroupName_s startswith \"opcua-pipeline-job\"\n| where Log_s has \"[CRAWL]\" and Log_s has \"Downloaded=\"\n| parse Log_s with * \"Downloaded=\" Downloaded:long \" Skipped=\" Skipped:long \" Errors=\" Errors:long \" Queued=\" Queued:long\n| project TimeGenerated, Downloaded, Skipped, Errors, Queued\n| order by TimeGenerated asc","size":0,"title":"Crawl Progress Over Time","timeContext":{"durationMs":86400000},"queryType":0,"resourceType":"microsoft.operationalinsights/workspaces","visualization":"linechart","chartSettings":{"yAxis":["Downloaded","Queued","Errors"]}},"name":"crawl-progress"},{"type":3,"content":{"version":"KqlItem/1.0","query":"ContainerAppConsoleLogs_CL\n| where ContainerGroupName_s startswith \"opcua-pipeline-job\"\n| where Log_s has \"[CRAWL]\" and Log_s has \"Downloaded=\"\n| parse Log_s with * \"Downloaded=\" Downloaded:long \" Skipped=\" Skipped:long \" Errors=\" Errors:long *\n| summarize MaxDownloaded=max(Downloaded), MaxSkipped=max(Skipped), TotalErrors=max(Errors) by bin(TimeGenerated, 1h)\n| order by TimeGenerated desc\n| take 1","size":4,"title":"Latest Crawl Stats","timeContext":{"durationMs":86400000},"queryType":0,"resourceType":"microsoft.operationalinsights/workspaces","visualization":"tiles","tileSettings":{"showBorder":true}},"name":"crawl-stats"},{"type":3,"content":{"version":"KqlItem/1.0","query":"ContainerAppConsoleLogs_CL\n| where ContainerGroupName_s startswith \"opcua-pipeline-job\"\n| where Log_s has \"[INDEX]\" and Log_s has \"Phase=\"\n| parse Log_s with * \"Phase=\" Phase:string \" \" *\n| extend Embedded = extract(\"Embedded=([0-9]+)\", 1, Log_s)\n| extend Uploaded = extract(\"Uploaded=([0-9]+)\", 1, Log_s)\n| extend Chunks = extract(\"Chunks=([0-9]+)\", 1, Log_s)\n| extend Parsed = extract(\"Parsed=([0-9]+)\", 1, Log_s)\n| project TimeGenerated, Phase, Parsed, Chunks, Embedded, Uploaded\n| order by TimeGenerated asc","size":0,"title":"Index Progress Over Time","timeContext":{"durationMs":86400000},"queryType":0,"resourceType":"microsoft.operationalinsights/workspaces","visualization":"linechart"},"name":"index-progress"},{"type":3,"content":{"version":"KqlItem/1.0","query":"ContainerAppConsoleLogs_CL\n| where ContainerGroupName_s startswith \"opcua-pipeline-job\"\n| where Log_s has \"Error=\" or Log_s has \"error\" or Log_s has \"Warning\"\n| project TimeGenerated, Log_s\n| order by TimeGenerated desc\n| take 50","size":1,"title":"Errors & Warnings","timeContext":{"durationMs":604800000},"queryType":0,"resourceType":"microsoft.operationalinsights/workspaces","visualization":"table"},"name":"errors"},{"type":3,"content":{"version":"KqlItem/1.0","query":"ContainerAppConsoleLogs_CL\n| where ContainerGroupName_s startswith \"opcua-pipeline-job\"\n| where Log_s has \"[PIPELINE]\" and Log_s has \"TotalElapsedSec=\"\n| parse Log_s with * \"TotalElapsedSec=\" ElapsedSec:long\n| project TimeGenerated, DurationMin=ElapsedSec/60.0\n| order by TimeGenerated desc\n| take 10","size":1,"title":"Execution History (Duration in Minutes)","timeContext":{"durationMs":2592000000},"queryType":0,"resourceType":"microsoft.operationalinsights/workspaces","visualization":"barchart"},"name":"exec-history"}],"isLocked":false}
 '''
@@ -293,3 +367,5 @@ output storageConnectionString string = 'DefaultEndpointsProtocol=https;AccountN
 output acrLoginServer string = acr.properties.loginServer
 
 output mcpEndpoint string = 'https://${search.name}.search.windows.net/knowledgebases/${prefix}-kb/mcp?api-version=2025-11-01-preview'
+
+output mcpServerEndpoint string = 'https://${mcpServer.properties.configuration.ingress.fqdn}'
