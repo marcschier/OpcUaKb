@@ -1,0 +1,13 @@
+{
+  "_comment": "Add this to claude_desktop_config.json — Local stdio transport via dotnet tool",
+  "mcpServers": {
+    "opcua-kb-tools": {
+      "command": "opcua-kb-mcp",
+      "args": ["--stdio"],
+      "env": {
+        "SEARCH_ENDPOINT": "https://opcua-kb-search.search.windows.net",
+        "SEARCH_API_KEY": "REPLACE_WITH_SEARCH_API_KEY"
+      }
+    }
+  }
+}

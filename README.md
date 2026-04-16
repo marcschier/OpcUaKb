@@ -158,6 +158,32 @@ All resources are defined in `infra/main.bicep`:
 | Container Apps Job | `{prefix}-pipeline-job` | Weekly crawl + index (cron: `0 2 * * 0`, 24h timeout) |
 | Container App | `{prefix}-mcp-server` | Hosted MCP server (scale 0–2, HTTP auto-scale) |
 
+## Quick Install
+
+### One-command setup (hosted — recommended)
+
+```bash
+# PowerShell
+.\scripts\install-mcp.ps1 -Mode hosted -ApiKey <your-search-api-key>
+
+# Bash
+SEARCH_API_KEY=<your-search-api-key> ./scripts/install-mcp.sh hosted
+```
+
+This configures both GitHub Copilot CLI and Claude Desktop (if installed) to use the hosted MCP endpoints. No local install needed.
+
+### Install as dotnet tool (local stdio)
+
+```bash
+# Install the tool globally
+dotnet tool install -g OpcUaKb.McpServer
+
+# Configure clients for local mode
+.\scripts\install-mcp.ps1 -Mode local -ApiKey <your-search-api-key>
+```
+
+The tool runs as `opcua-kb-mcp --stdio` and communicates over stdin/stdout.
+
 ## MCP Endpoints
 
 ### Azure AI Search KB (RAG with answer synthesis)
@@ -174,7 +200,13 @@ Hosted on Azure Container Apps with scale-to-zero. Requires `api-key` header.
 https://<mcp-server-fqdn>/
 ```
 
-Local development via stdio (no auth needed):
+Local via dotnet tool:
+
+```bash
+opcua-kb-mcp --stdio
+```
+
+Or from source:
 
 ```bash
 SEARCH_ENDPOINT=https://<prefix>-search.search.windows.net \
@@ -182,7 +214,7 @@ SEARCH_API_KEY=<key> \
 dotnet run --project src/OpcUaKb.McpServer -- --stdio
 ```
 
-### Configure in GitHub Copilot CLI
+### Manual Configuration: GitHub Copilot CLI
 
 Add to `~/.copilot/mcp.json`:
 
@@ -203,7 +235,7 @@ Add to `~/.copilot/mcp.json`:
 }
 ```
 
-### Configure in Claude Desktop
+### Manual Configuration: Claude Desktop
 
 Add to `claude_desktop_config.json`:
 
@@ -211,8 +243,8 @@ Add to `claude_desktop_config.json`:
 {
   "mcpServers": {
     "opcua-kb-tools": {
-      "command": "dotnet",
-      "args": ["run", "--project", "<path-to-repo>/src/OpcUaKb.McpServer", "--", "--stdio"],
+      "command": "opcua-kb-mcp",
+      "args": ["--stdio"],
       "env": {
         "SEARCH_ENDPOINT": "https://<prefix>-search.search.windows.net",
         "SEARCH_API_KEY": "<your-search-api-key>"

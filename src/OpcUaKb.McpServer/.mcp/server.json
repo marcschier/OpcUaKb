@@ -1,0 +1,61 @@
+{
+  "name": "opcua-kb-mcp",
+  "version": "2.1.0",
+  "description": "OPC UA Knowledge Base MCP Server — search specs, validate NodeSets, check compliance, and get modelling guidance for all OPC UA specifications and companion specs.",
+  "publisher": "marcschier",
+  "repository": "https://github.com/marcschier/OpcUaKb",
+  "tools": [
+    {
+      "name": "search_nodes",
+      "description": "Search OPC UA NodeSet nodes with structured filters (node class, spec, parent type, modelling rule). Version-aware."
+    },
+    {
+      "name": "get_type_hierarchy",
+      "description": "Get ObjectType inheritance chain with declared/inherited member counts."
+    },
+    {
+      "name": "get_spec_summary",
+      "description": "Get pre-computed NodeSet statistics for a companion spec or all specs."
+    },
+    {
+      "name": "search_docs",
+      "description": "Full-text search across OPC UA specification HTML pages and tables. Version-aware."
+    },
+    {
+      "name": "count_nodes",
+      "description": "Faceted aggregation by node_class, spec_part, modelling_rule, or data_type."
+    },
+    {
+      "name": "validate_nodeset",
+      "description": "Validate NodeSet XML against OPC UA standard and OPC 11030 best practices."
+    },
+    {
+      "name": "compare_versions",
+      "description": "Compare two spec versions, classify changes as backward-compatible or breaking."
+    },
+    {
+      "name": "check_compliance",
+      "description": "Check a NodeSet implementation against a companion spec for compliance."
+    },
+    {
+      "name": "suggest_model",
+      "description": "Suggest OPC UA information model design based on a domain description."
+    }
+  ],
+  "transport": {
+    "stdio": {
+      "command": "opcua-kb-mcp",
+      "args": ["--stdio"],
+      "env": {
+        "SEARCH_ENDPOINT": { "description": "Azure AI Search endpoint URL", "required": true },
+        "SEARCH_API_KEY": { "description": "Azure AI Search API key", "required": true }
+      }
+    },
+    "http": {
+      "url": "https://opcua-kb-mcp-server.salmonfield-436bb4c2.eastus.azurecontainerapps.io/",
+      "headers": {
+        "api-key": { "description": "Search API key for authentication", "required": true }
+      }
+    }
+  }
+}
