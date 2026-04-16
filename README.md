@@ -68,6 +68,8 @@ The custom MCP server (`OpcUaKb.McpServer`) exposes these tools alongside the Az
 | `get_spec_summary` | Pre-computed per-spec or cross-spec NodeSet statistics |
 | `search_docs` | Full-text search across HTML specification pages and tables. Version-aware with fallback. |
 | `count_nodes` | Faceted aggregation by node_class, spec_part, modelling_rule, or data_type |
+| `validate_nodeset` | Validate NodeSet XML against OPC UA standard and OPC 11030 best practices (naming, types, references) |
+| `compare_versions` | Compare two spec versions, classify changes as backward-compatible or breaking per OPC 11030 §3 |
 
 All tools default to the **latest spec version** with automatic fallback to older versions if too few results. Use `version_mode` parameter (`latest`, `previous`, `oldest`, `all`) or `spec_version` (`v104`, `v105`, etc.) to control version filtering.
 
