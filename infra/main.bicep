@@ -295,6 +295,10 @@ resource mcpServer 'Microsoft.App/containerApps@2024-03-01' = {
               name: 'SEARCH_API_KEY'
               secretRef: 'search-api-key'
             }
+            {
+              name: 'MCP_API_KEY'
+              secretRef: 'search-api-key'
+            }
           ]
         }
       ]

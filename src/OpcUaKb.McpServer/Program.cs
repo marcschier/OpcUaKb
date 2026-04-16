@@ -39,6 +39,26 @@ else
         .WithToolsFromAssembly();
 
     var app = builder.Build();
+
+    // API key authentication middleware
+    var apiKey = Environment.GetEnvironmentVariable("MCP_API_KEY")
+        ?? Environment.GetEnvironmentVariable("SEARCH_API_KEY");
+    if (!string.IsNullOrEmpty(apiKey))
+    {
+        app.Use(async (context, next) =>
+        {
+            if (!context.Request.Headers.TryGetValue("api-key", out var providedKey)
+                || providedKey != apiKey)
+            {
+                context.Response.StatusCode = 401;
+                context.Response.ContentType = "application/json";
+                await context.Response.WriteAsync("""{"jsonrpc":"2.0","error":{"code":-32000,"message":"Unauthorized: provide a valid api-key header"},"id":""}""");
+                return;
+            }
+            await next();
+        });
+    }
+
     app.MapMcp();
     app.Run();
 }

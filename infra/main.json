@@ -6,7 +6,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.36.1.42791",
-      "templateHash": "16064647189946878001"
+      "templateHash": "8442228073861137031"
     }
   },
   "parameters": {
@@ -338,6 +338,10 @@
                 },
                 {
                   "name": "SEARCH_API_KEY",
+                  "secretRef": "search-api-key"
+                },
+                {
+                  "name": "MCP_API_KEY",
                   "secretRef": "search-api-key"
                 }
               ]

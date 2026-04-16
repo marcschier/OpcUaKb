@@ -154,13 +154,13 @@ https://<prefix>-search.search.windows.net/knowledgebases/<prefix>-kb/mcp?api-ve
 
 ### Custom MCP Server (structured tools)
 
-Hosted on Azure Container Apps with scale-to-zero (0–2 replicas, HTTP auto-scale at 5 concurrent requests).
+Hosted on Azure Container Apps with scale-to-zero (0–2 replicas, HTTP auto-scale at 5 concurrent requests). Requires `api-key` header for authentication (uses the same Search API key).
 
 ```
 https://<mcp-server-fqdn>/
 ```
 
-Can also run locally via stdio transport for development:
+Can also run locally via stdio transport for development (no auth needed):
 
 ```bash
 SEARCH_ENDPOINT=https://<prefix>-search.search.windows.net \
@@ -184,7 +184,10 @@ Add to `~/.copilot/mcp.json`:
     },
     "opcua-kb-tools": {
       "type": "http",
-      "url": "https://<mcp-server-fqdn>/"
+      "url": "https://<mcp-server-fqdn>/",
+      "headers": {
+        "api-key": "<your-search-api-key>"
+      }
     }
   }
 }
