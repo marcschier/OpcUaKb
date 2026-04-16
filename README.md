@@ -224,6 +224,7 @@ The pipeline runs weekly (Sunday 2am UTC) as a Container Apps Job with a 24-hour
 1. **Crawl** — BFS crawl of `reference.opcfoundation.org` (full) + `profiles.opcfoundation.org` (full) + other `*.opcfoundation.org` (depth 1). Content stored in Azure Blob Storage with incremental state tracking.
 2. **Index** — Parse HTML into chunks, generate vector embeddings via `text-embedding-3-large` (120K TPM), upload to Azure AI Search with semantic ranking.
 3. **NodeSet** — Parse NodeSet XML files, build type hierarchy with cross-file inheritance resolution, generate per-ObjectType hierarchy documents and per-spec summary documents, upload all to index.
+4. **CloudLibrary** *(optional)* — If `CLOUDLIB_USERNAME` + `CLOUDLIB_PASSWORD` are set, downloads all NodeSet XMLs from the [OPC UA Cloud Library](https://uacloudlibrary.opcfoundation.org), parses and indexes them separately (tagged as `cloudlib_nodeset`). Includes retry with exponential backoff and rate limiting.
 
 All HTTP calls include retry logic with exponential backoff for 429/503 errors.
 
@@ -236,6 +237,10 @@ export SEARCH_ENDPOINT="https://<prefix>-search.search.windows.net"
 export SEARCH_API_KEY="$(az search admin-key show --service-name <prefix>-search -g <rg> --query primaryKey -o tsv)"
 export AOAI_ENDPOINT="https://<prefix>-openai.openai.azure.com"
 export AOAI_API_KEY="$(az cognitiveservices account keys list --name <prefix>-openai -g <rg> --query key1 -o tsv)"
+
+# Optional: enable UA-CloudLibrary integration
+export CLOUDLIB_USERNAME="your-email@example.com"
+export CLOUDLIB_PASSWORD="your-password"
 
 # Run locally
 dotnet run --project src/OpcUaKb.Pipeline

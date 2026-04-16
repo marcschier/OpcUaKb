@@ -85,6 +85,10 @@ try
     var nodesetDocs = await nodesetParser.ParseAllAsync();
     log.LogInformation("[PIPELINE] Phase={Phase} Docs={Count}", "nodeset", nodesetDocs.Count);
 
+    // Shared search client for uploading nodeset + cloudlib docs
+    var searchClient = new SearchIndexClient(new Uri(searchEndpoint), new AzureKeyCredential(searchApiKey))
+        .GetSearchClient("opcua-content-index");
+
     if (nodesetDocs.Count > 0)
     {
         // Generate summary documents for aggregation queries
@@ -95,11 +99,7 @@ try
         var allNodesetDocs = nodesetDocs.Concat(summaryDocs).ToList();
 
         // Upload nodeset docs to search index WITHOUT pre-computing embeddings.
-        // The index has a vectorizer configured — Azure AI Search generates vectors at query time.
-        // This avoids hours of 429-throttled embedding API calls for potentially 100K+ nodeset docs.
         log.LogInformation("[PIPELINE] Phase={Phase} Status={Status} Docs={Count}", "nodeset-upload", "started", allNodesetDocs.Count);
-        var searchClient = new SearchIndexClient(new Uri(searchEndpoint), new AzureKeyCredential(searchApiKey))
-            .GetSearchClient("opcua-content-index");
         int nodesetUploaded = 0;
         for (int i = 0; i < allNodesetDocs.Count; i += 100)
         {
@@ -123,6 +123,75 @@ try
 
         log.LogInformation("[PIPELINE] Phase={Phase} Status={Status} Uploaded={U}",
             "nodeset", "completed", nodesetUploaded);
+    }
+
+    // Phase 3b: CloudLibrary NodeSets (optional — only if credentials provided)
+    var cloudLib = CloudLibraryClient.TryCreate(storageConnStr, log);
+    if (cloudLib != null)
+    {
+        log.LogInformation("[PIPELINE] Phase={Phase} Status={Status}", "cloudlib", "started");
+        await statusTracker.UpdateAsync("cloudlib", "running");
+
+        var cloudLibBlobNames = await cloudLib.DownloadAllNodeSetsAsync();
+        log.LogInformation("[CLOUDLIB] Downloaded {Count} NodeSet blobs", cloudLibBlobNames.Count);
+
+        if (cloudLibBlobNames.Count > 0)
+        {
+            // Parse CloudLibrary NodeSets using the same parser
+            var cloudParser = new OpcUaNodeSetParser(storageConnStr, loggerFactory.CreateLogger<OpcUaNodeSetParser>());
+            var cloudDocs = await cloudParser.ParseBlobsAsync(cloudLibBlobNames);
+            log.LogInformation("[CLOUDLIB] Parsed {Count} NodeSet documents", cloudDocs.Count);
+
+            // Tag all cloudlib docs with distinct content_type
+            foreach (var doc in cloudDocs)
+            {
+                var ct = doc.TryGetValue("content_type", out var v) ? v?.ToString() ?? "" : "";
+                doc["content_type"] = ct switch
+                {
+                    "nodeset" => "cloudlib_nodeset",
+                    "nodeset_summary" => "cloudlib_summary",
+                    "nodeset_hierarchy" => "cloudlib_hierarchy",
+                    _ => $"cloudlib_{ct}",
+                };
+            }
+
+            // Generate summaries for CloudLibrary nodesets
+            var cloudSummaries = cloudParser.GenerateSummaries(cloudDocs);
+            foreach (var doc in cloudSummaries)
+            {
+                var ct = doc.TryGetValue("content_type", out var v) ? v?.ToString() ?? "" : "";
+                if (!ct.StartsWith("cloudlib_"))
+                    doc["content_type"] = $"cloudlib_{ct}";
+            }
+
+            var allCloudDocs = cloudDocs.Concat(cloudSummaries).ToList();
+            log.LogInformation("[CLOUDLIB] Uploading {Count} docs to index", allCloudDocs.Count);
+
+            int cloudUploaded = 0;
+            for (int i = 0; i < allCloudDocs.Count; i += 100)
+            {
+                var batch = allCloudDocs.Skip(i).Take(100).ToList();
+                try
+                {
+                    await RetryHelper.RetrySearchAsync(async () =>
+                    {
+                        await searchClient.IndexDocumentsAsync(IndexDocumentsBatch.Upload(batch));
+                        return true;
+                    }, log);
+                    cloudUploaded += batch.Count;
+                    if (cloudUploaded % 1000 == 0)
+                        log.LogInformation("[CLOUDLIB] Uploaded={N} Total={T}", cloudUploaded, allCloudDocs.Count);
+                }
+                catch (Exception ex)
+                {
+                    log.LogWarning("[CLOUDLIB] Phase=upload Error={Error} BatchStart={I}", ex.Message, i);
+                }
+            }
+
+            log.LogInformation("[PIPELINE] Phase={Phase} Status={Status} Uploaded={U}",
+                "cloudlib", "completed", cloudUploaded);
+        }
+        await statusTracker.UpdateAsync("cloudlib", "completed");
     }
 
     await statusTracker.UpdateAsync("nodeset", "completed",

@@ -20,6 +20,14 @@ param pipelineImage string = ''
 @description('Cron schedule for the pipeline job')
 param cronSchedule string = '0 2 * * 0'
 
+@description('Optional: UA-CloudLibrary username (enables CloudLib integration)')
+@secure()
+param cloudLibUsername string = ''
+
+@description('Optional: UA-CloudLibrary password')
+@secure()
+param cloudLibPassword string = ''
+
 // ── Derived names ────────────────────────────────────────────────────
 var searchName = '${prefix}-search'
 var openaiName = '${prefix}-openai'
@@ -203,6 +211,14 @@ resource pipelineJob 'Microsoft.App/jobs@2024-03-01' = {
           name: 'aoai-api-key'
           value: openai.listKeys().key1
         }
+        {
+          name: 'cloudlib-username'
+          value: cloudLibUsername
+        }
+        {
+          name: 'cloudlib-password'
+          value: cloudLibPassword
+        }
       ]
     }
     template: {
@@ -234,6 +250,14 @@ resource pipelineJob 'Microsoft.App/jobs@2024-03-01' = {
             {
               name: 'AOAI_API_KEY'
               secretRef: 'aoai-api-key'
+            }
+            {
+              name: 'CLOUDLIB_USERNAME'
+              secretRef: 'cloudlib-username'
+            }
+            {
+              name: 'CLOUDLIB_PASSWORD'
+              secretRef: 'cloudlib-password'
             }
           ]
         }

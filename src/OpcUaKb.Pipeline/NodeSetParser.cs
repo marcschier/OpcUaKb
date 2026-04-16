@@ -101,6 +101,15 @@ sealed class OpcUaNodeSetParser
     /// <summary>Exposes the computed type hierarchy for use by GenerateSummaries.</summary>
     internal IReadOnlyDictionary<string, TypeInfo> TypeRegistry => _typeRegistry;
 
+    /// <summary>Parse specific blob names (used for CloudLibrary integration).</summary>
+    public async Task<List<SearchDocument>> ParseBlobsAsync(List<string> blobNames)
+    {
+        _log.LogInformation("[NODESET] Parsing {Count} specified blobs", blobNames.Count);
+        if (blobNames.Count == 0) return [];
+
+        return await ParseBlobListAsync(blobNames);
+    }
+
     public async Task<List<SearchDocument>> ParseAllAsync()
     {
         // Phase 1: discover nodeset XML blobs
@@ -119,7 +128,11 @@ sealed class OpcUaNodeSetParser
         _log.LogInformation("[NODESET] Found {Count} nodeset XML blobs", blobNames.Count);
         if (blobNames.Count == 0) return [];
 
-        // Phase 2: download + parse each blob, collecting hierarchy metadata
+        return await ParseBlobListAsync(blobNames);
+    }
+
+    async Task<List<SearchDocument>> ParseBlobListAsync(List<string> blobNames)
+    {
         var allDocs = new List<SearchDocument>();
         var allFileNodes = new List<(string spec, List<FileNodeInfo> nodes,
             Dictionary<string, string> localToGlobal)>();
