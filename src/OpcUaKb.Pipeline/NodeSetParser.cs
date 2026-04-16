@@ -257,6 +257,8 @@ sealed class OpcUaNodeSetParser
                 ["browse_name"] = "",
                 ["parent_type"] = "",
                 ["data_type"] = "",
+            ["is_latest"] = true,
+            ["version_rank"] = 1,
             }));
         }
 
@@ -325,6 +327,8 @@ sealed class OpcUaNodeSetParser
             ["browse_name"] = "",
             ["parent_type"] = "",
             ["data_type"] = "",
+        ["is_latest"] = true,
+        ["version_rank"] = 1,
         }));
 
         // Per-ObjectType hierarchy documents for structured lookup
@@ -379,6 +383,8 @@ sealed class OpcUaNodeSetParser
                 ["browse_name"] = t.BrowseName,
                 ["parent_type"] = chain.Count > 0 ? chain[0] : "",
                 ["data_type"] = "",
+            ["is_latest"] = true,
+            ["version_rank"] = 1,
             }));
         }
 
@@ -542,6 +548,8 @@ sealed class OpcUaNodeSetParser
                 ["browse_name"] = browseName,
                 ["parent_type"] = parentType,
                 ["data_type"] = StripNamespacePrefix(dataType),
+            ["is_latest"] = true,
+            ["version_rank"] = 1,
             }));
         }
 

@@ -464,8 +464,10 @@ sealed class OpcUaIndexer
     readonly BlobContainerClient _container;
     readonly HttpClient _http;
     readonly string _aoaiEndpoint;
+    readonly string _storageConn;
     readonly ILogger _log;
     readonly PipelineStatusTracker _tracker;
+    VersionCatalog _versionCatalog = null!;
 
     public OpcUaIndexer(string storageConn, string searchEndpoint, string searchApiKey,
         string aoaiEndpoint, string aoaiApiKey, ILogger logger, PipelineStatusTracker tracker)
@@ -473,6 +475,7 @@ sealed class OpcUaIndexer
         _log = logger;
         _tracker = tracker;
         _aoaiEndpoint = aoaiEndpoint;
+        _storageConn = storageConn;
         _indexClient = new SearchIndexClient(new Uri(searchEndpoint), new AzureKeyCredential(searchApiKey));
         _searchClient = _indexClient.GetSearchClient(IndexName);
         _container = new BlobContainerClient(storageConn, ContainerName);
@@ -484,6 +487,9 @@ sealed class OpcUaIndexer
     {
         await EnsureIndexAsync();
         _log.LogInformation("[INDEX] Status=index_ready Index={Name}", IndexName);
+
+        // Build version catalog from crawled main page
+        _versionCatalog = await VersionCatalog.BuildFromCrawledPageAsync(_storageConn, _log);
 
         var htmlBlobs = new List<string>();
         await foreach (var item in _container.GetBlobsAsync())
@@ -508,8 +514,10 @@ sealed class OpcUaIndexer
                 var html = dl.Value.Content.ToString();
                 var sourceUrl = $"https://reference.opcfoundation.org/{blobName.Replace('\\', '/')}";
                 var (part, ver) = ExtractSpecInfo(blobName);
+                var versionEntry = _versionCatalog.Lookup(blobName);
                 var doc = await parser.ParseDocumentAsync(html);
-                allDocs.AddRange(ChunkDocument(doc, part, ver, sourceUrl));
+                allDocs.AddRange(ChunkDocument(doc, part, ver, sourceUrl,
+                    versionEntry?.IsLatest ?? true, versionEntry?.Rank ?? 1));
 
                 if (processed % 50 == 0)
                 {
@@ -607,6 +615,8 @@ sealed class OpcUaIndexer
                 new SimpleField("browse_name", SearchFieldDataType.String) { IsFilterable = true },
                 new SimpleField("parent_type", SearchFieldDataType.String) { IsFilterable = true },
                 new SimpleField("data_type", SearchFieldDataType.String) { IsFilterable = true, IsFacetable = true },
+                new SimpleField("is_latest", SearchFieldDataType.Boolean) { IsFilterable = true },
+                new SimpleField("version_rank", SearchFieldDataType.Int32) { IsFilterable = true, IsSortable = true },
             },
             SemanticSearch = new SemanticSearch
             {
@@ -641,7 +651,8 @@ sealed class OpcUaIndexer
         await _indexClient.CreateOrUpdateIndexAsync(index);
     }
 
-    List<SearchDocument> ChunkDocument(AngleSharp.Dom.IDocument doc, string specPart, string specVersion, string sourceUrl)
+    List<SearchDocument> ChunkDocument(AngleSharp.Dom.IDocument doc, string specPart, string specVersion,
+        string sourceUrl, bool isLatest, int versionRank)
     {
         var results = new List<SearchDocument>();
         var body = doc.Body;
@@ -684,7 +695,7 @@ sealed class OpcUaIndexer
         {
             if (buf.Length / 4 + text.Length / 4 > ChunkSize && buf.Length > 0)
             {
-                results.Add(MakeDoc(buf.ToString(), bufHeading, bufType, sourceUrl, specPart, specVersion, chunkIdx++));
+                results.Add(MakeDoc(buf.ToString(), bufHeading, bufType, sourceUrl, specPart, specVersion, chunkIdx++, isLatest, versionRank));
                 var words = buf.ToString().Split(' ', StringSplitOptions.RemoveEmptyEntries);
                 buf.Clear();
                 if (words.Length > ChunkOverlap)
@@ -695,13 +706,14 @@ sealed class OpcUaIndexer
             buf.Append(text);
         }
         if (buf.Length > 0)
-            results.Add(MakeDoc(buf.ToString(), bufHeading, bufType, sourceUrl, specPart, specVersion, chunkIdx));
+            results.Add(MakeDoc(buf.ToString(), bufHeading, bufType, sourceUrl, specPart, specVersion, chunkIdx, isLatest, versionRank));
 
         return results;
     }
 
     static SearchDocument MakeDoc(string text, string heading, string contentType,
-        string sourceUrl, string specPart, string specVersion, int chunkIdx)
+        string sourceUrl, string specPart, string specVersion, int chunkIdx,
+        bool isLatest = true, int versionRank = 1)
     {
         var id = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{sourceUrl}:{chunkIdx}")))[..32].ToLowerInvariant();
         return new SearchDocument(new Dictionary<string, object>
@@ -709,6 +721,7 @@ sealed class OpcUaIndexer
             ["id"] = id, ["page_chunk"] = text, ["source_url"] = sourceUrl,
             ["spec_part"] = specPart, ["spec_version"] = specVersion,
             ["section_title"] = heading, ["content_type"] = contentType, ["chunk_index"] = chunkIdx,
+            ["is_latest"] = isLatest, ["version_rank"] = versionRank,
         });
     }
 
@@ -734,13 +747,8 @@ sealed class OpcUaIndexer
             .ToList();
     }
 
-    static (string part, string version) ExtractSpecInfo(string blobName)
-    {
-        var p = Regex.Match(blobName, @"Part(\d+)", RegexOptions.IgnoreCase);
-        var v = Regex.Match(blobName, @"(v\d+)", RegexOptions.IgnoreCase);
-        return (p.Success ? $"Part{p.Groups[1].Value}" : "Unknown",
-                v.Success ? v.Groups[1].Value : "Unknown");
-    }
+    static (string part, string version) ExtractSpecInfo(string blobName) =>
+        VersionCatalog.ExtractSpecInfoFromPath(blobName);
 
     static string TableToMarkdown(IElement table)
     {

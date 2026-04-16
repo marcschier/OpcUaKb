@@ -9,7 +9,7 @@ static class SearchNodesTool
      Description("Search OPC UA NodeSet nodes with structured filters. " +
         "Use this to find specific ObjectTypes, Variables, Methods, or DataTypes " +
         "by name, parent type, companion spec, or modelling rule. " +
-        "Returns browse name, node class, parent type, spec, and description.")]
+        "By default searches only the latest spec version; use version_mode to control.")]
     public static async Task<string> SearchNodes(
         SearchService search,
         [Description("Text query to search node names and descriptions")] string? query = null,
@@ -17,6 +17,8 @@ static class SearchNodesTool
         [Description("Filter by companion spec name (e.g., DI, PlasticsRubber, Pumps)")] string? spec = null,
         [Description("Filter by parent type browse name")] string? parent_type = null,
         [Description("Filter by modelling rule: Mandatory, Optional, MandatoryPlaceholder, OptionalPlaceholder")] string? modelling_rule = null,
+        [Description(VersionFilter.ModeDescription)] string? version_mode = null,
+        [Description("Filter by specific spec version (e.g., v104, v105). Overrides version_mode.")] string? spec_version = null,
         [Description("Max results (1-50, default 20)")] int top = 20)
     {
         top = Math.Clamp(top, 1, 50);
@@ -31,18 +33,16 @@ static class SearchNodesTool
         if (!string.IsNullOrWhiteSpace(modelling_rule))
             filters.Add($"modelling_rule eq '{modelling_rule}'");
 
-        var filter = string.Join(" and ", filters);
-        var results = await search.SearchAsync(
-            string.IsNullOrWhiteSpace(query) ? "*" : query,
-            filter,
-            ["browse_name", "node_class", "spec_part", "parent_type", "modelling_rule", "data_type", "page_chunk"],
-            top);
+        var select = new[] { "browse_name", "node_class", "spec_part", "spec_version", "parent_type", "modelling_rule", "data_type", "page_chunk", "is_latest", "version_rank" };
+        var (results, usedFallback) = await VersionFilter.SearchWithFallbackAsync(
+            search, query, filters, select, top, version_mode, spec_version);
 
         if (results.Count == 0)
             return "No nodes found matching the criteria.";
 
         var sb = new StringBuilder();
         sb.AppendLine($"Found {results.Count} node(s):");
+        VersionFilter.AppendVersionNote(sb, version_mode, spec_version, usedFallback);
         sb.AppendLine();
 
         foreach (var r in results)
@@ -51,12 +51,13 @@ static class SearchNodesTool
             var name = d.GetString("browse_name");
             var nc = d.GetString("node_class");
             var sp = d.GetString("spec_part");
+            var sv = d.GetString("spec_version");
             var pt = d.GetString("parent_type");
             var mr = d.GetString("modelling_rule");
             var dt = d.GetString("data_type");
             var chunk = d.GetString("page_chunk");
 
-            sb.AppendLine($"• {name} [{nc}] — Spec: {sp}");
+            sb.AppendLine($"• {name} [{nc}] — Spec: {sp} ({sv})");
             if (!string.IsNullOrEmpty(pt)) sb.AppendLine($"  Parent: {pt}");
             if (!string.IsNullOrEmpty(mr)) sb.AppendLine($"  ModellingRule: {mr}");
             if (!string.IsNullOrEmpty(dt)) sb.AppendLine($"  DataType: {dt}");

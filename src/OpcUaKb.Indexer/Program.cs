@@ -174,6 +174,8 @@ async Task CreateIndexAsync()
             new SimpleField("browse_name", SearchFieldDataType.String) { IsFilterable = true },
             new SimpleField("parent_type", SearchFieldDataType.String) { IsFilterable = true },
             new SimpleField("data_type", SearchFieldDataType.String) { IsFilterable = true, IsFacetable = true },
+            new SimpleField("is_latest", SearchFieldDataType.Boolean) { IsFilterable = true },
+            new SimpleField("version_rank", SearchFieldDataType.Int32) { IsFilterable = true, IsSortable = true },
         },
         SemanticSearch = new SemanticSearch
         {
