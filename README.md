@@ -70,6 +70,8 @@ The custom MCP server (`OpcUaKb.McpServer`) exposes these tools alongside the Az
 | `count_nodes` | Faceted aggregation by node_class, spec_part, modelling_rule, or data_type |
 | `validate_nodeset` | Validate NodeSet XML against OPC UA standard and OPC 11030 best practices (naming, types, references) |
 | `compare_versions` | Compare two spec versions, classify changes as backward-compatible or breaking per OPC 11030 §3 |
+| `check_compliance` | Check a NodeSet implementation against a companion spec — finds missing mandatory/optional nodes, data type mismatches |
+| `suggest_model` | Suggest OPC UA information model design based on a domain description, recommending base types and best practices |
 
 All tools default to the **latest spec version** with automatic fallback to older versions if too few results. Use `version_mode` parameter (`latest`, `previous`, `oldest`, `all`) or `spec_version` (`v104`, `v105`, etc.) to control version filtering.
 
