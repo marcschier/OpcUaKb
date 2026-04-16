@@ -38,6 +38,41 @@ jobs:
         # Note: OpcUaKb.Test is a console app that requires SEARCH_API_KEY at runtime.
         # This step validates it compiles. Integration tests run separately.
 
+  publish-nuget-tool:
+    needs: build-and-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Get version from NBGV
+        id: nbgv
+        run: |
+          dotnet tool install -g nbgv
+          VERSION=$(nbgv get-version -v NuGetPackageVersion)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+      - name: Pack dotnet tool
+        run: dotnet pack src/OpcUaKb.McpServer -c Release -o ./nupkg
+
+      - name: Push to GitHub Packages
+        run: dotnet nuget push ./nupkg/*.nupkg --source "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json" --api-key ${{ secrets.GITHUB_TOKEN }} --skip-duplicate
+
+      - name: Upload NuGet artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuget-package
+          path: ./nupkg/*.nupkg
+          retention-days: 90
+
   publish-containers:
     needs: build-and-test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
