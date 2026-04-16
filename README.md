@@ -1,6 +1,11 @@
 # OPC UA Knowledge Base MCP Server
 
-An Azure AI Search agentic retrieval pipeline that exposes the complete OPC UA reference specifications as MCP (Model Context Protocol) endpoints for AI agents. Crawls and indexes all content from `*.opcfoundation.org` including specification text, tables, diagrams, and NodeSet XML files — with full type hierarchy resolution for ObjectType inheritance.
+[![Build](https://github.com/marcschier/OpcUaKb/actions/workflows/ci.yml/badge.svg)](https://github.com/marcschier/OpcUaKb/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![.NET 10](https://img.shields.io/badge/.NET-10.0-purple)](https://dotnet.microsoft.com/download/dotnet/10.0)
+[![MCP](https://img.shields.io/badge/MCP-1.2-green)](https://modelcontextprotocol.io)
+
+An Azure AI Search agentic retrieval pipeline that exposes the complete OPC UA reference specifications as MCP (Model Context Protocol) endpoints for AI agents. Crawls and indexes all content from `*.opcfoundation.org` including specification text, tables, diagrams, and NodeSet XML files — with full type hierarchy resolution, version-aware indexing, and structured query tools.
 
 ## Architecture
 
@@ -25,11 +30,13 @@ graph TD
 
 - **Web Knowledge Source** — Live web retrieval across `*.opcfoundation.org` for real-time queries
 - **Crawl + Index Pipeline** — Downloads all content, chunks HTML, parses NodeSet XMLs, generates vector embeddings, indexes in Azure AI Search
-- **NodeSet XML Parser** — Extracts node definitions with ModellingRule (Mandatory/Optional), data types, parent types, browse names, and companion spec attribution
+- **Version-Aware Indexing** — Scrapes the spec version catalog; tags every document with `is_latest` and `version_rank`. Queries default to the latest version with automatic fallback to older versions
+- **NodeSet XML Parser** — Extracts node definitions with ModellingRule, data types, parent types, browse names, and companion spec attribution
 - **Type Hierarchy Resolution** — Cross-file ObjectType inheritance with alias/namespace normalization, supertype chain tracking, and declared vs inherited member counting
 - **Pre-computed Summaries** — Per-spec and cross-spec aggregation documents + per-ObjectType hierarchy documents for answering "which is the largest?" questions
 - **Knowledge Base** — Azure AI Search agentic retrieval with GPT-4o for query planning (medium reasoning effort) and answer synthesis
-- **Custom MCP Server** — 5 structured tools for precise NodeSet queries, faceted counts, hierarchy lookup, spec summaries, and documentation search
+- **Custom MCP Server** — 5 structured tools with API key auth, hosted on Azure Container Apps with scale-to-zero
+- **Git Versioning** — Nerdbank.GitVersioning for deterministic SemVer; container images tagged with version + SHA
 - **Monitoring** — Azure Monitor Workbook dashboard with crawl progress, index progress, errors, and execution history
 
 ## Prerequisites
@@ -56,11 +63,13 @@ The custom MCP server (`OpcUaKb.McpServer`) exposes these tools alongside the Az
 
 | Tool | Description |
 |------|-------------|
-| `search_nodes` | Structured search with OData filters by node class, spec, parent type, modelling rule |
+| `search_nodes` | Structured search with OData filters by node class, spec, parent type, modelling rule. Version-aware with fallback. |
 | `get_type_hierarchy` | ObjectType inheritance chain with declared/inherited member counts |
 | `get_spec_summary` | Pre-computed per-spec or cross-spec NodeSet statistics |
-| `search_docs` | Full-text search across HTML specification pages and tables |
+| `search_docs` | Full-text search across HTML specification pages and tables. Version-aware with fallback. |
 | `count_nodes` | Faceted aggregation by node_class, spec_part, modelling_rule, or data_type |
+
+All tools default to the **latest spec version** with automatic fallback to older versions if too few results. Use `version_mode` parameter (`latest`, `previous`, `oldest`, `all`) or `spec_version` (`v104`, `v105`, etc.) to control version filtering.
 
 ### Search Index Fields
 
@@ -68,11 +77,14 @@ The custom MCP server (`OpcUaKb.McpServer`) exposes these tools alongside the Az
 |-------|------|-----------|-----------|-------------|
 | `browse_name` | String | ✓ | | Node browse name |
 | `node_class` | String | ✓ | ✓ | ObjectType, Variable, Method, DataType, etc. |
-| `spec_part` | String | ✓ | ✓ | Companion spec name (DI, Pumps, PlasticsRubber, etc.) |
+| `spec_part` | String | ✓ | ✓ | Companion spec name (DI, Pumps, Part3, etc.) |
+| `spec_version` | String | ✓ | | Version path segment (v104, v105, v200) |
 | `parent_type` | String | ✓ | | Parent ObjectType browse name |
 | `modelling_rule` | String | ✓ | ✓ | Mandatory, Optional, MandatoryPlaceholder, etc. |
 | `data_type` | String | ✓ | ✓ | OPC UA data type |
 | `content_type` | String | ✓ | | nodeset, nodeset_summary, nodeset_hierarchy, text, table, diagram |
+| `is_latest` | Boolean | ✓ | | `true` for the latest version of each spec |
+| `version_rank` | Int32 | ✓ | | 1 = latest, 2 = previous, 3 = older, etc. |
 
 ### Content Types
 
@@ -106,7 +118,7 @@ Options:
 | `-p, --prefix` | Resource name prefix | `opcua-kb` |
 | `-l, --location` | Azure region | `eastus` |
 
-Prerequisites: `az` CLI (logged in), `docker`, `dotnet` SDK 10.0+.
+Prerequisites: `az` CLI (logged in), `docker`, `dotnet` SDK 10.0+, `nbgv` (for versioning).
 
 The script is idempotent — safe to run multiple times.
 

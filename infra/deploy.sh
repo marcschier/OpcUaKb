@@ -104,12 +104,17 @@ MCP_ENDPOINT=$(echo "$DEPLOY_OUTPUT" | jq -r '.mcpEndpoint.value')
 
 ok "Infrastructure deployed."
 
-# ── Step 4: Build and push Docker image to ACR ───────────────────────
-IMAGE_TAG="${ACR_LOGIN_SERVER}/${PREFIX}-pipeline:latest"
-info "Building and pushing container image to ACR..."
+# ── Step 4: Get version from Nerdbank.GitVersioning ──────────────────
+VERSION=$(nbgv get-version -v NuGetPackageVersion 2>/dev/null || echo "0.0.0")
+info "Building version ${VERSION}..."
+
+# ── Step 4a: Build and push Docker image to ACR ──────────────────────
+IMAGE_TAG="${ACR_LOGIN_SERVER}/${PREFIX}-pipeline:${VERSION}"
+info "Building and pushing pipeline image to ACR..."
 az acr build \
   --registry "$ACR_NAME" \
   --resource-group "$RESOURCE_GROUP" \
+  --image "${PREFIX}-pipeline:${VERSION}" \
   --image "${PREFIX}-pipeline:latest" \
   --file "${REPO_ROOT}/Dockerfile" \
   "${REPO_ROOT}" \
@@ -117,11 +122,12 @@ az acr build \
 ok "Container image pushed: ${IMAGE_TAG}"
 
 # ── Step 4b: Build and push MCP server image to ACR ──────────────────
-MCP_IMAGE_TAG="${ACR_LOGIN_SERVER}/opcua-mcp-server:latest"
+MCP_IMAGE_TAG="${ACR_LOGIN_SERVER}/opcua-mcp-server:${VERSION}"
 info "Building and pushing MCP server image to ACR..."
 az acr build \
   --registry "$ACR_NAME" \
   --resource-group "$RESOURCE_GROUP" \
+  --image "opcua-mcp-server:${VERSION}" \
   --image "opcua-mcp-server:latest" \
   --file "${REPO_ROOT}/Dockerfile.mcpserver" \
   "${REPO_ROOT}" \

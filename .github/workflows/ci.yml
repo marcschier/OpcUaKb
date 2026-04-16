@@ -19,6 +19,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for Nerdbank.GitVersioning
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
@@ -49,6 +51,23 @@ jobs:
             dockerfile: Dockerfile.mcpserver
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for Nerdbank.GitVersioning
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Get version from NBGV
+        id: nbgv
+        run: |
+          dotnet tool install -g nbgv
+          VERSION=$(nbgv get-version -v NuGetPackageVersion)
+          SHA=$(nbgv get-version -v GitCommitIdShort)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "sha=$SHA" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION (sha: $SHA)"
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -63,9 +82,9 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }}
           tags: |
-            type=sha,prefix=
+            type=raw,value=${{ steps.nbgv.outputs.version }}
             type=raw,value=latest
-            type=ref,event=branch
+            type=sha,prefix=
 
       - name: Build and push
         uses: docker/build-push-action@v6
