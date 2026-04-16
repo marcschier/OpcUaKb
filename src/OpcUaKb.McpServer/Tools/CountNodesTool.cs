@@ -10,13 +10,15 @@ static class CountNodesTool
      Description("Count and aggregate OPC UA NodeSet nodes by facets. " +
         "Returns counts grouped by node class, companion spec, modelling rule, or data type. " +
         "Use this for questions like 'how many Variables per spec?' or " +
-        "'what data types are most common?'. Supports combining a filter with a facet.")]
+        "'what data types are most common?'. By default counts only latest version nodes.")]
     public static async Task<string> CountNodes(
         SearchService search,
         [Description("Facet to group by: node_class, spec_part, modelling_rule, data_type")] string facet,
         [Description("Optional filter by node class: ObjectType, Variable, Method, DataType")] string? node_class = null,
         [Description("Optional filter by companion spec name")] string? spec = null,
         [Description("Optional filter by modelling rule")] string? modelling_rule = null,
+        [Description(VersionFilter.ModeDescription)] string? version_mode = null,
+        [Description("Filter by specific spec version (e.g., v104, v105). Overrides version_mode.")] string? spec_version = null,
         [Description("Max facet values to return (default 50)")] int top = 50)
     {
         var validFacets = new HashSet<string> { "node_class", "spec_part", "modelling_rule", "data_type" };
@@ -33,6 +35,11 @@ static class CountNodesTool
         if (!string.IsNullOrWhiteSpace(modelling_rule))
             filters.Add($"modelling_rule eq '{modelling_rule}'");
 
+        // Apply version filter
+        var versionFilter = VersionFilter.BuildVersionFilter(version_mode, spec_version);
+        if (versionFilter != null)
+            filters.Add(versionFilter);
+
         var filter = string.Join(" and ", filters);
         var facets = await search.FacetSearchAsync(filter, [$"{facet},count:{top}"]);
 
@@ -41,6 +48,7 @@ static class CountNodesTool
 
         var sb = new StringBuilder();
         sb.AppendLine($"Node counts by {facet}:");
+        VersionFilter.AppendVersionNote(sb, version_mode, spec_version, false);
         sb.AppendLine();
 
         var total = facetResults.Sum(f => f.Count ?? 0);
