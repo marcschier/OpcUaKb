@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![.NET 10](https://img.shields.io/badge/.NET-10.0-purple)](https://dotnet.microsoft.com/download/dotnet/10.0)
 [![MCP](https://img.shields.io/badge/MCP-1.2-green)](https://modelcontextprotocol.io)
-[![Version](https://img.shields.io/badge/version-2.1-orange)](version.json)
+[![Version](https://img.shields.io/badge/version-2.2-orange)](version.json)
 
 An Azure AI Search agentic retrieval pipeline that exposes the complete OPC UA reference specifications as MCP (Model Context Protocol) endpoints for AI agents. Crawls and indexes all content from `*.opcfoundation.org` including specification text, tables, diagrams, and NodeSet XML files — with full type hierarchy resolution, version-aware indexing, compliance validation tools, and optional [UA-CloudLibrary](https://uacloudlibrary.opcfoundation.org) integration.
 
