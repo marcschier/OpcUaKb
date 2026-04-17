@@ -22,7 +22,7 @@ graph TD
     Web["Web Knowledge Source"] --> KB["Knowledge Base<br/>(Azure AI Search + GPT-4o)"]
     Index --> KB
     KB --> MCP1["KB MCP Endpoint<br/>(RAG synthesis)"]
-    Index --> McpServer["Custom MCP Server<br/>(9 tools)"]
+    Index --> McpServer["Custom MCP Server<br/>(10 tools)"]
     MCP1 --> Clients["Copilot CLI / Claude Desktop<br/>/ AI Agents"]
     McpServer --> Clients
     MCP1 --> Chat["OpcUaKb.Chat"]
@@ -36,7 +36,8 @@ graph TD
 - **NodeSet XML Parser** — Extracts node definitions with ModellingRule, data types, parent types, browse names, and companion spec attribution
 - **Type Hierarchy Resolution** — Cross-file ObjectType inheritance with alias/namespace normalization, supertype chain tracking, and declared vs inherited member counting
 - **Pre-computed Summaries** — Per-spec and cross-spec aggregation documents + per-ObjectType hierarchy documents for answering "which is the largest?" questions
-- **UA-CloudLibrary Integration** *(optional)* — Downloads NodeSet XMLs from the [OPC Foundation Cloud Library](https://uacloudlibrary.opcfoundation.org), indexed separately as `cloudlib_nodeset` content type
+- **UA-CloudLibrary Integration** *(optional)* — Downloads NodeSet XMLs and REST metadata (version, publication date, title/description, download count) from the [OPC Foundation Cloud Library](https://uacloudlibrary.opcfoundation.org). Indexed separately as `cloudlib_nodeset` content type with `source`, `namespace_uri`, `publication_date`, `popularity`, and `in_opcfoundation_index` tags for efficient diff queries.
+- **Popularity-Boosted Ranking** — Every search uses a default `popularity_boost` scoring profile. OPC Foundation specs receive max boost; CloudLibrary entries are boosted by `numberOfDownloads` (logarithmic scale), surfacing widely-adopted nodesets first.
 - **Compliance Tools** — Validate NodeSet XMLs against OPC 11030 best practices, check implementations against companion specs, compare spec versions for breaking changes, suggest information model designs
 - **Knowledge Base** — Azure AI Search agentic retrieval with GPT-4o for query planning (medium reasoning effort) and answer synthesis
 - **Custom MCP Server** — 9 tools with API key auth, hosted on Azure Container Apps with scale-to-zero. Supports HTTP/SSE (hosted) and stdio (local) transports.
@@ -55,7 +56,7 @@ graph TD
 | Project | Description |
 |---------|-------------|
 | `OpcUaKb.Pipeline` | Combined crawl + index + NodeSet parse pipeline (runs as Container Apps Job) |
-| `OpcUaKb.McpServer` | Custom MCP server with 9 tools — search, compliance, modelling (HTTP + stdio) |
+| `OpcUaKb.McpServer` | Custom MCP server with 10 tools — search, compliance, modelling (HTTP + stdio) |
 | `OpcUaKb.Chat` | Interactive console chatbot grounded by the knowledge base |
 | `OpcUaKb.Setup` | Creates the Web Knowledge Source, Knowledge Base, and verifies the MCP endpoint |
 | `OpcUaKb.Crawler` | Standalone crawler for `*.opcfoundation.org` |
@@ -64,17 +65,18 @@ graph TD
 
 ## MCP Tools
 
-The custom MCP server (`OpcUaKb.McpServer`) exposes 9 tools alongside the Azure AI Search KB endpoint:
+The custom MCP server (`OpcUaKb.McpServer`) exposes 10 tools alongside the Azure AI Search KB endpoint:
 
 ### Search & Discovery
 
 | Tool | Description |
 |------|-------------|
-| `search_nodes` | Structured search with OData filters by node class, spec, parent type, modelling rule. Version-aware with two-pass fallback. |
+| `search_nodes` | Structured search with OData filters by node class, spec, parent type, modelling rule, and `source`. Version-aware with two-pass fallback. |
 | `get_type_hierarchy` | ObjectType inheritance chain with declared/inherited member counts and supertype chain |
-| `get_spec_summary` | Pre-computed per-spec or cross-spec NodeSet statistics (node counts, top ObjectTypes) |
+| `get_spec_summary` | Pre-computed per-spec or cross-spec NodeSet statistics (node counts, top ObjectTypes). Filterable by `source`. |
 | `search_docs` | Full-text search across HTML specification pages, tables, and diagrams. Version-aware. |
-| `count_nodes` | Faceted aggregation by node_class, spec_part, modelling_rule, or data_type |
+| `count_nodes` | Faceted aggregation by node_class, spec_part, modelling_rule, data_type, or `source`. |
+| `list_specs` | Catalog of indexed specs (opcfoundation + CloudLib) with version, publication date, namespace URI, popularity, and description. Use `source="cloudlib"` + `unique_to_source=true` to answer "which CloudLib NodeSets aren't already in the official companion spec index?" in one call. |
 
 ### Compliance & Modelling
 
@@ -108,9 +110,15 @@ All search tools default to the **latest spec version** with automatic fallback 
 | `parent_type` | String | ✓ | | Parent ObjectType browse name |
 | `modelling_rule` | String | ✓ | ✓ | Mandatory, Optional, MandatoryPlaceholder, etc. |
 | `data_type` | String | ✓ | ✓ | OPC UA data type |
-| `content_type` | String | ✓ | | nodeset, nodeset_summary, nodeset_hierarchy, cloudlib_nodeset, text, table, diagram |
+| `content_type` | String | ✓ | | nodeset, nodeset_summary, nodeset_hierarchy, cloudlib_nodeset, cloudlib_summary, text, table, diagram |
 | `is_latest` | Boolean | ✓ | | `true` for the latest version of each spec |
 | `version_rank` | Int32 | ✓ | | 1 = latest, 2 = previous, 3 = older, etc. |
+| `source` | String | ✓ | ✓ | `opcfoundation` (crawled specs) or `cloudlib` (UA-CloudLibrary) |
+| `namespace_uri` | String | ✓ | | OPC UA namespace URI (from ModelUri) |
+| `publication_date` | DateTimeOffset | ✓ | | CloudLib publication date |
+| `popularity` | Int64 | ✓ | | Download count; opcfoundation docs get max boost. Drives default scoring profile. |
+| `in_opcfoundation_index` | Boolean | ✓ | ✓ | `true` if the doc's namespace is also in the crawled opcfoundation index — enables CloudLib-diff queries |
+| `title`, `description` | String | | | CloudLib metadata (title + short description) |
 
 ### Content Types
 
@@ -192,7 +200,7 @@ The tool runs as `opcua-kb-mcp --stdio` and communicates over stdin/stdout.
 https://<prefix>-search.search.windows.net/knowledgebases/<prefix>-kb/mcp?api-version=2025-11-01-preview
 ```
 
-### Custom MCP Server (9 structured tools)
+### Custom MCP Server (10 structured tools)
 
 Hosted on Azure Container Apps with scale-to-zero and configurable rate limiting.
 
@@ -288,7 +296,7 @@ The pipeline runs weekly (Sunday 2am UTC) as a Container Apps Job with a 24-hour
 | **1. Crawl** | BFS crawl of `reference.opcfoundation.org` + `profiles.opcfoundation.org` + other `*.opcfoundation.org` subdomains. Incremental with state tracking. |
 | **2. Index** | Parse HTML → chunks, generate embeddings via `text-embedding-3-large` (120K TPM), upload to Azure AI Search. Version catalog built from crawled main page. |
 | **3. NodeSet** | Parse NodeSet XMLs, build cross-file type hierarchy, generate per-ObjectType hierarchy docs + per-spec summaries. |
-| **4. CloudLibrary** *(optional)* | If `CLOUDLIB_USERNAME` + `CLOUDLIB_PASSWORD` set, download all NodeSets from [UA-CloudLibrary](https://uacloudlibrary.opcfoundation.org), parse and index separately as `cloudlib_*` content types. |
+| **4. CloudLibrary** *(optional)* | If `CLOUDLIB_USERNAME` + `CLOUDLIB_PASSWORD` set, download all NodeSets + REST metadata from [UA-CloudLibrary](https://uacloudlibrary.opcfoundation.org), parse and index separately as `cloudlib_*` content types. Each doc is tagged with `source`, `namespace_uri`, `publication_date`, `popularity` (downloads), and `in_opcfoundation_index` (true if the namespace is also in the crawled opcfoundation index). Multiple versions per namespace are version-ranked by publication date. |
 
 All HTTP calls include retry logic with exponential backoff for 429/503 errors.
 
