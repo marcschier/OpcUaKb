@@ -75,11 +75,13 @@ sealed class CloudLibraryClient
 
             foreach (var item in results)
             {
-                var id = item?["id"]?.GetValue<string>();
-                var nsUri = item?["namespaceUri"]?.GetValue<string>() ?? "";
+                // API nests nodeset metadata under "nodeset" object
+                var nodeset = item?["nodeset"];
+                var identifier = nodeset?["identifier"]?.ToString();
+                var nsUri = nodeset?["namespaceUri"]?.GetValue<string>() ?? "";
                 var title = item?["title"]?.GetValue<string>() ?? nsUri;
-                if (!string.IsNullOrEmpty(id))
-                    allModels.Add((id, nsUri, title));
+                if (!string.IsNullOrEmpty(identifier))
+                    allModels.Add((identifier, nsUri, title));
             }
 
             _log.LogInformation("[CLOUDLIB] Listed {Count} models (offset={Offset})",
@@ -123,12 +125,21 @@ sealed class CloudLibraryClient
                     continue;
                 }
 
-                // The response may be JSON-wrapped or raw XML
+                // The response is either:
+                // - A JSON string (quoted XML): "<?xml ..."
+                // - A JSON object with nodeset.nodesetXml
+                // - Raw XML: <?xml ...
                 string nodesetXml;
-                if (xml.TrimStart().StartsWith('{'))
+                var trimmed = xml.TrimStart();
+                if (trimmed.StartsWith('"'))
                 {
-                    // JSON response — extract the nodeset XML from the response
-                    var jsonResp = JsonNode.Parse(xml);
+                    // JSON-quoted string — unwrap
+                    nodesetXml = JsonSerializer.Deserialize<string>(trimmed) ?? xml;
+                }
+                else if (trimmed.StartsWith('{'))
+                {
+                    // JSON object — extract nodesetXml field
+                    var jsonResp = JsonNode.Parse(trimmed);
                     nodesetXml = jsonResp?["nodeset"]?["nodesetXml"]?.GetValue<string>() ?? xml;
                 }
                 else
