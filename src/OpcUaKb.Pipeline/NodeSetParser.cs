@@ -255,6 +255,10 @@ sealed class OpcUaNodeSetParser
             }
 
             var specId = $"summary-{spec.ToLowerInvariant().Replace(' ', '-')}";
+            // Pick a representative namespace URI from the first doc of this spec
+            var nsUri = nodesetDocs.FirstOrDefault(d =>
+                d.TryGetValue("spec_part", out var p) && p?.ToString() == spec
+                && d.TryGetValue("namespace_uri", out _))?["namespace_uri"]?.ToString() ?? "";
             summaries.Add(new SearchDocument(new Dictionary<string, object>
             {
                 ["id"] = MakeId("summary", spec, specId),
@@ -270,6 +274,7 @@ sealed class OpcUaNodeSetParser
                 ["browse_name"] = "",
                 ["parent_type"] = "",
                 ["data_type"] = "",
+                ["namespace_uri"] = nsUri,
             ["is_latest"] = true,
             ["version_rank"] = 1,
             }));
@@ -340,6 +345,7 @@ sealed class OpcUaNodeSetParser
             ["browse_name"] = "",
             ["parent_type"] = "",
             ["data_type"] = "",
+            ["namespace_uri"] = "",
         ["is_latest"] = true,
         ["version_rank"] = 1,
         }));
@@ -396,6 +402,7 @@ sealed class OpcUaNodeSetParser
                 ["browse_name"] = t.BrowseName,
                 ["parent_type"] = chain.Count > 0 ? chain[0] : "",
                 ["data_type"] = "",
+                ["namespace_uri"] = "",
             ["is_latest"] = true,
             ["version_rank"] = 1,
             }));
@@ -561,6 +568,7 @@ sealed class OpcUaNodeSetParser
                 ["browse_name"] = browseName,
                 ["parent_type"] = parentType,
                 ["data_type"] = StripNamespacePrefix(dataType),
+                ["namespace_uri"] = primaryNsUri,
             ["is_latest"] = true,
             ["version_rank"] = 1,
             }));

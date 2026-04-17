@@ -17,12 +17,13 @@ static class SearchNodesTool
         [Description("Filter by companion spec name (e.g., DI, PlasticsRubber, Pumps)")] string? spec = null,
         [Description("Filter by parent type browse name")] string? parent_type = null,
         [Description("Filter by modelling rule: Mandatory, Optional, MandatoryPlaceholder, OptionalPlaceholder")] string? modelling_rule = null,
+        [Description("Filter by source: 'opcfoundation' (official specs) or 'cloudlib' (UA-CloudLibrary submissions)")] string? source = null,
         [Description(VersionFilter.ModeDescription)] string? version_mode = null,
         [Description("Filter by specific spec version (e.g., v104, v105). Overrides version_mode.")] string? spec_version = null,
         [Description("Max results (1-50, default 20)")] int top = 20)
     {
         top = Math.Clamp(top, 1, 50);
-        var filters = new List<string> { "content_type eq 'nodeset'" };
+        var filters = new List<string> { "(content_type eq 'nodeset' or content_type eq 'cloudlib_nodeset')" };
 
         if (!string.IsNullOrWhiteSpace(node_class))
             filters.Add($"node_class eq '{node_class}'");
@@ -32,8 +33,10 @@ static class SearchNodesTool
             filters.Add($"parent_type eq '{parent_type}'");
         if (!string.IsNullOrWhiteSpace(modelling_rule))
             filters.Add($"modelling_rule eq '{modelling_rule}'");
+        if (!string.IsNullOrWhiteSpace(source))
+            filters.Add($"source eq '{source.ToLowerInvariant()}'");
 
-        var select = new[] { "browse_name", "node_class", "spec_part", "spec_version", "parent_type", "modelling_rule", "data_type", "page_chunk", "is_latest", "version_rank" };
+        var select = new[] { "browse_name", "node_class", "spec_part", "spec_version", "parent_type", "modelling_rule", "data_type", "page_chunk", "is_latest", "version_rank", "source", "namespace_uri" };
         var (results, usedFallback) = await VersionFilter.SearchWithFallbackAsync(
             search, query, filters, select, top, version_mode, spec_version);
 
@@ -55,9 +58,11 @@ static class SearchNodesTool
             var pt = d.GetString("parent_type");
             var mr = d.GetString("modelling_rule");
             var dt = d.GetString("data_type");
+            var src = d.GetString("source");
             var chunk = d.GetString("page_chunk");
 
-            sb.AppendLine($"• {name} [{nc}] — Spec: {sp} ({sv})");
+            var srcTag = string.IsNullOrEmpty(src) ? "" : $" [src:{src}]";
+            sb.AppendLine($"• {name} [{nc}] — Spec: {sp} ({sv}){srcTag}");
             if (!string.IsNullOrEmpty(pt)) sb.AppendLine($"  Parent: {pt}");
             if (!string.IsNullOrEmpty(mr)) sb.AppendLine($"  ModellingRule: {mr}");
             if (!string.IsNullOrEmpty(dt)) sb.AppendLine($"  DataType: {dt}");

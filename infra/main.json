@@ -6,7 +6,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.36.1.42791",
-      "templateHash": "8442228073861137031"
+      "templateHash": "14448762200777266695"
     }
   },
   "parameters": {
@@ -44,6 +44,20 @@
       "defaultValue": "0 2 * * 0",
       "metadata": {
         "description": "Cron schedule for the pipeline job"
+      }
+    },
+    "cloudLibUsername": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional: UA-CloudLibrary username (enables CloudLib integration)"
+      }
+    },
+    "cloudLibPassword": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional: UA-CloudLibrary password"
       }
     }
   },
@@ -243,6 +257,14 @@
             {
               "name": "aoai-api-key",
               "value": "[listKeys('openai', '2024-10-01').key1]"
+            },
+            {
+              "name": "cloudlib-username",
+              "value": "[parameters('cloudLibUsername')]"
+            },
+            {
+              "name": "cloudlib-password",
+              "value": "[parameters('cloudLibPassword')]"
             }
           ]
         },
@@ -275,6 +297,14 @@
                 {
                   "name": "AOAI_API_KEY",
                   "secretRef": "aoai-api-key"
+                },
+                {
+                  "name": "CLOUDLIB_USERNAME",
+                  "secretRef": "cloudlib-username"
+                },
+                {
+                  "name": "CLOUDLIB_PASSWORD",
+                  "secretRef": "cloudlib-password"
                 }
               ]
             }
@@ -343,6 +373,14 @@
                 {
                   "name": "MCP_API_KEY",
                   "secretRef": "search-api-key"
+                },
+                {
+                  "name": "MCP_REQUIRE_AUTH",
+                  "value": "false"
+                },
+                {
+                  "name": "MCP_ANON_RATE_LIMIT",
+                  "value": "10"
                 }
               ]
             }

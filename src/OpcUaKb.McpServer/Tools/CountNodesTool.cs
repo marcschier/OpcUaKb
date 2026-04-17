@@ -13,27 +13,30 @@ static class CountNodesTool
         "'what data types are most common?'. By default counts only latest version nodes.")]
     public static async Task<string> CountNodes(
         SearchService search,
-        [Description("Facet to group by: node_class, spec_part, modelling_rule, data_type")] string facet,
+        [Description("Facet to group by: node_class, spec_part, modelling_rule, data_type, source")] string facet,
         [Description("Optional filter by node class: ObjectType, Variable, Method, DataType")] string? node_class = null,
         [Description("Optional filter by companion spec name")] string? spec = null,
         [Description("Optional filter by modelling rule")] string? modelling_rule = null,
+        [Description("Optional filter by source: 'opcfoundation' or 'cloudlib'")] string? source = null,
         [Description(VersionFilter.ModeDescription)] string? version_mode = null,
         [Description("Filter by specific spec version (e.g., v104, v105). Overrides version_mode.")] string? spec_version = null,
         [Description("Max facet values to return (default 50)")] int top = 50)
     {
-        var validFacets = new HashSet<string> { "node_class", "spec_part", "modelling_rule", "data_type" };
+        var validFacets = new HashSet<string> { "node_class", "spec_part", "modelling_rule", "data_type", "source" };
         if (!validFacets.Contains(facet))
             return $"Invalid facet '{facet}'. Must be one of: {string.Join(", ", validFacets)}";
 
         top = Math.Clamp(top, 1, 100);
 
-        var filters = new List<string> { "content_type eq 'nodeset'" };
+        var filters = new List<string> { "(content_type eq 'nodeset' or content_type eq 'cloudlib_nodeset')" };
         if (!string.IsNullOrWhiteSpace(node_class))
             filters.Add($"node_class eq '{node_class}'");
         if (!string.IsNullOrWhiteSpace(spec))
             filters.Add($"spec_part eq '{spec}'");
         if (!string.IsNullOrWhiteSpace(modelling_rule))
             filters.Add($"modelling_rule eq '{modelling_rule}'");
+        if (!string.IsNullOrWhiteSpace(source))
+            filters.Add($"source eq '{source.ToLowerInvariant()}'");
 
         // Apply version filter
         var versionFilter = VersionFilter.BuildVersionFilter(version_mode, spec_version);

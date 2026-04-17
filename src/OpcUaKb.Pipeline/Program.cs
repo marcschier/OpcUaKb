@@ -98,6 +98,14 @@ try
         // Combine nodeset + summary docs for upload
         var allNodesetDocs = nodesetDocs.Concat(summaryDocs).ToList();
 
+        // Tag all opcfoundation docs with source and top popularity
+        foreach (var doc in allNodesetDocs)
+        {
+            doc["source"] = "opcfoundation";
+            doc["popularity"] = 1_000_000_000L;
+            doc["in_opcfoundation_index"] = true;
+        }
+
         // Upload nodeset docs to search index WITHOUT pre-computing embeddings.
         log.LogInformation("[PIPELINE] Phase={Phase} Status={Status} Docs={Count}", "nodeset-upload", "started", allNodesetDocs.Count);
         int nodesetUploaded = 0;
@@ -125,6 +133,16 @@ try
             "nodeset", "completed", nodesetUploaded);
     }
 
+    // Collect opcfoundation namespace URIs (used by cloudlib phase to detect duplicates).
+    // Case-insensitive and normalized (trim trailing slash) so cloudlib comparisons are reliable.
+    var opcfNamespaces = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var d in nodesetDocs)
+    {
+        if (d.TryGetValue("namespace_uri", out var n) && n is string s && !string.IsNullOrEmpty(s))
+            opcfNamespaces.Add(s.TrimEnd('/'));
+    }
+    log.LogInformation("[PIPELINE] OpcFoundation namespaces collected={Count}", opcfNamespaces.Count);
+
     // Phase 3b: CloudLibrary NodeSets (optional — only if credentials provided)
     var cloudLib = CloudLibraryClient.TryCreate(storageConnStr, log);
     if (cloudLib != null)
@@ -132,17 +150,25 @@ try
         log.LogInformation("[PIPELINE] Phase={Phase} Status={Status}", "cloudlib", "started");
         await statusTracker.UpdateAsync("cloudlib", "running");
 
-        var cloudLibBlobNames = await cloudLib.DownloadAllNodeSetsAsync();
-        log.LogInformation("[CLOUDLIB] Downloaded {Count} NodeSet blobs", cloudLibBlobNames.Count);
+        var cloudLibEntries = await cloudLib.DownloadAllNodeSetsAsync();
+        log.LogInformation("[CLOUDLIB] Downloaded {Count} NodeSet entries", cloudLibEntries.Count);
 
-        if (cloudLibBlobNames.Count > 0)
+        if (cloudLibEntries.Count > 0)
         {
+            var cloudLibBlobNames = cloudLibEntries.Select(e => e.BlobName).ToList();
+
+            // Index entries by blob name for quick overlay of metadata onto parsed docs
+            var metaByNs = cloudLibEntries
+                .Where(e => !string.IsNullOrEmpty(e.NamespaceUri))
+                .GroupBy(e => e.NamespaceUri)
+                .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
             // Parse CloudLibrary NodeSets using the same parser
             var cloudParser = new OpcUaNodeSetParser(storageConnStr, loggerFactory.CreateLogger<OpcUaNodeSetParser>());
             var cloudDocs = await cloudParser.ParseBlobsAsync(cloudLibBlobNames);
             log.LogInformation("[CLOUDLIB] Parsed {Count} NodeSet documents", cloudDocs.Count);
 
-            // Tag all cloudlib docs with distinct content_type
+            // Tag all cloudlib docs with distinct content_type + overlay API metadata
             foreach (var doc in cloudDocs)
             {
                 var ct = doc.TryGetValue("content_type", out var v) ? v?.ToString() ?? "" : "";
@@ -153,6 +179,52 @@ try
                     "nodeset_hierarchy" => "cloudlib_hierarchy",
                     _ => $"cloudlib_{ct}",
                 };
+                doc["source"] = "cloudlib";
+                doc["popularity"] = 0L; // default; overwritten below if metadata matches
+
+                // Look up metadata by namespace_uri (emitted by NodeSetParser on every doc)
+                var nsUri = doc.TryGetValue("namespace_uri", out var n) ? n?.ToString() ?? "" : "";
+
+                // Flag whether this namespace already exists in the crawled opcfoundation index
+                doc["in_opcfoundation_index"] = !string.IsNullOrEmpty(nsUri)
+                    && opcfNamespaces.Contains(nsUri.TrimEnd('/'));
+
+                if (string.IsNullOrEmpty(nsUri) || !metaByNs.TryGetValue(nsUri, out var meta))
+                    continue;
+
+                doc["title"] = meta.Title;
+                doc["description"] = meta.Description;
+                doc["popularity"] = meta.NumberOfDownloads;
+                if (!string.IsNullOrEmpty(meta.Version))
+                    doc["spec_version"] = meta.Version;
+                if (meta.PublicationDate.HasValue)
+                    doc["publication_date"] = meta.PublicationDate.Value;
+            }
+
+            // Compute is_latest / version_rank across CloudLib versions of the same namespace
+            // Group by namespace_uri, order by publication_date desc, rank 1 = latest
+            var cloudByNs = cloudDocs
+                .Where(d => d.TryGetValue("namespace_uri", out var n) && !string.IsNullOrEmpty(n?.ToString()))
+                .GroupBy(d => d["namespace_uri"]?.ToString() ?? "");
+
+            foreach (var group in cloudByNs)
+            {
+                // Order by publication_date desc (null last)
+                var ordered = group
+                    .OrderByDescending(d => d.TryGetValue("publication_date", out var p) && p is DateTimeOffset dto ? dto : DateTimeOffset.MinValue)
+                    .ThenByDescending(d => d.TryGetValue("spec_version", out var v) ? v?.ToString() ?? "" : "")
+                    .ToList();
+
+                // Assign rank per distinct spec_version within the namespace
+                int rank = 0;
+                string? prevVersion = null;
+                foreach (var d in ordered)
+                {
+                    var ver = d.TryGetValue("spec_version", out var v) ? v?.ToString() ?? "" : "";
+                    if (ver != prevVersion) { rank++; prevVersion = ver; }
+                    d["version_rank"] = rank;
+                    d["is_latest"] = rank == 1;
+                }
             }
 
             // Generate summaries for CloudLibrary nodesets
@@ -162,6 +234,53 @@ try
                 var ct = doc.TryGetValue("content_type", out var v) ? v?.ToString() ?? "" : "";
                 if (!ct.StartsWith("cloudlib_"))
                     doc["content_type"] = $"cloudlib_{ct}";
+                doc["source"] = "cloudlib";
+                doc["popularity"] = 0L; // default; overwritten below if a representative doc matches
+                doc["in_opcfoundation_index"] = false; // default; overwritten below
+
+                // Enrich summary page_chunk with the CloudLib title + description if we have matching metadata
+                var spec = doc.TryGetValue("spec_part", out var sp) ? sp?.ToString() ?? "" : "";
+                var firstForSpec = cloudDocs
+                    .FirstOrDefault(d => d.TryGetValue("spec_part", out var p) && p?.ToString() == spec
+                                      && d.TryGetValue("title", out _));
+                if (firstForSpec != null)
+                {
+                    var title = firstForSpec.TryGetValue("title", out var t) ? t?.ToString() ?? "" : "";
+                    var desc = firstForSpec.TryGetValue("description", out var de) ? de?.ToString() ?? "" : "";
+                    var nsUri = firstForSpec.TryGetValue("namespace_uri", out var n) ? n?.ToString() ?? "" : "";
+                    var version = firstForSpec.TryGetValue("spec_version", out var vv) ? vv?.ToString() ?? "" : "";
+                    var pubDate = firstForSpec.TryGetValue("publication_date", out var pd) && pd is DateTimeOffset dto
+                        ? dto.ToString("yyyy-MM-dd") : "";
+
+                    doc["title"] = title;
+                    doc["description"] = desc;
+                    doc["namespace_uri"] = nsUri;
+                    if (!string.IsNullOrEmpty(version)) doc["spec_version"] = version;
+                    if (firstForSpec.TryGetValue("publication_date", out var pdv) && pdv is DateTimeOffset d2)
+                        doc["publication_date"] = d2;
+                    if (firstForSpec.TryGetValue("popularity", out var pop)) doc["popularity"] = pop!;
+                    if (firstForSpec.TryGetValue("in_opcfoundation_index", out var inIdx)) doc["in_opcfoundation_index"] = inIdx!;
+
+                    // Prefix page_chunk with human-readable metadata so text search can find it
+                    var existing = doc.TryGetValue("page_chunk", out var pc) ? pc?.ToString() ?? "" : "";
+                    var header = new System.Text.StringBuilder();
+                    if (!string.IsNullOrEmpty(title)) header.AppendLine($"Title: {title}");
+                    if (!string.IsNullOrEmpty(nsUri)) header.AppendLine($"Namespace: {nsUri}");
+                    if (!string.IsNullOrEmpty(version)) header.AppendLine($"Version: {version}");
+                    if (!string.IsNullOrEmpty(pubDate)) header.AppendLine($"Published: {pubDate}");
+                    header.AppendLine("Source: UA-CloudLibrary");
+                    if (!string.IsNullOrEmpty(desc))
+                    {
+                        header.AppendLine();
+                        header.AppendLine("Description:");
+                        header.AppendLine(desc);
+                        header.AppendLine();
+                    }
+                    doc["page_chunk"] = header.ToString() + existing;
+                    // Mirror is_latest / version_rank from the representative doc
+                    if (firstForSpec.TryGetValue("is_latest", out var il)) doc["is_latest"] = il!;
+                    if (firstForSpec.TryGetValue("version_rank", out var vr)) doc["version_rank"] = vr!;
+                }
             }
 
             var allCloudDocs = cloudDocs.Concat(cloudSummaries).ToList();
@@ -686,7 +805,27 @@ sealed class OpcUaIndexer
                 new SimpleField("data_type", SearchFieldDataType.String) { IsFilterable = true, IsFacetable = true },
                 new SimpleField("is_latest", SearchFieldDataType.Boolean) { IsFilterable = true },
                 new SimpleField("version_rank", SearchFieldDataType.Int32) { IsFilterable = true, IsSortable = true },
+                new SimpleField("source", SearchFieldDataType.String) { IsFilterable = true, IsFacetable = true },
+                new SimpleField("namespace_uri", SearchFieldDataType.String) { IsFilterable = true },
+                new SimpleField("publication_date", SearchFieldDataType.DateTimeOffset) { IsFilterable = true, IsSortable = true },
+                new SearchableField("title"),
+                new SearchableField("description") { AnalyzerName = LexicalAnalyzerName.EnMicrosoft },
+                new SimpleField("popularity", SearchFieldDataType.Int64) { IsFilterable = true, IsSortable = true },
+                new SimpleField("in_opcfoundation_index", SearchFieldDataType.Boolean) { IsFilterable = true, IsFacetable = true },
             },
+            ScoringProfiles =
+            {
+                new ScoringProfile("popularity_boost")
+                {
+                    Functions =
+                    {
+                        new MagnitudeScoringFunction("popularity", 5.0,
+                            new MagnitudeScoringParameters(1, 1_000_000) { ShouldBoostBeyondRangeByConstant = true })
+                        { Interpolation = ScoringFunctionInterpolation.Logarithmic }
+                    }
+                }
+            },
+            DefaultScoringProfile = "popularity_boost",
             SemanticSearch = new SemanticSearch
             {
                 DefaultConfigurationName = "semantic_config",
@@ -695,7 +834,8 @@ sealed class OpcUaIndexer
                     new SemanticConfiguration("semantic_config", new SemanticPrioritizedFields
                     {
                         TitleField = new SemanticField("section_title"),
-                        ContentFields = { new SemanticField("page_chunk") }
+                        ContentFields = { new SemanticField("page_chunk"), new SemanticField("description") },
+                        KeywordsFields = { new SemanticField("title") }
                     })
                 }
             },
@@ -791,6 +931,9 @@ sealed class OpcUaIndexer
             ["spec_part"] = specPart, ["spec_version"] = specVersion,
             ["section_title"] = heading, ["content_type"] = contentType, ["chunk_index"] = chunkIdx,
             ["is_latest"] = isLatest, ["version_rank"] = versionRank,
+            ["source"] = "opcfoundation",
+            ["popularity"] = 1_000_000_000L,
+            ["in_opcfoundation_index"] = true,
         });
     }
 

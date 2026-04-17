@@ -176,7 +176,27 @@ async Task CreateIndexAsync()
             new SimpleField("data_type", SearchFieldDataType.String) { IsFilterable = true, IsFacetable = true },
             new SimpleField("is_latest", SearchFieldDataType.Boolean) { IsFilterable = true },
             new SimpleField("version_rank", SearchFieldDataType.Int32) { IsFilterable = true, IsSortable = true },
+            new SimpleField("source", SearchFieldDataType.String) { IsFilterable = true, IsFacetable = true },
+            new SimpleField("namespace_uri", SearchFieldDataType.String) { IsFilterable = true },
+            new SimpleField("publication_date", SearchFieldDataType.DateTimeOffset) { IsFilterable = true, IsSortable = true },
+            new SearchableField("title"),
+            new SearchableField("description") { AnalyzerName = LexicalAnalyzerName.EnMicrosoft },
+            new SimpleField("popularity", SearchFieldDataType.Int64) { IsFilterable = true, IsSortable = true },
+            new SimpleField("in_opcfoundation_index", SearchFieldDataType.Boolean) { IsFilterable = true, IsFacetable = true },
         },
+        ScoringProfiles =
+        {
+            new ScoringProfile("popularity_boost")
+            {
+                Functions =
+                {
+                    new MagnitudeScoringFunction("popularity", 5.0,
+                        new MagnitudeScoringParameters(1, 1_000_000) { ShouldBoostBeyondRangeByConstant = true })
+                    { Interpolation = ScoringFunctionInterpolation.Logarithmic }
+                }
+            }
+        },
+        DefaultScoringProfile = "popularity_boost",
         SemanticSearch = new SemanticSearch
         {
             DefaultConfigurationName = "semantic_config",
@@ -185,7 +205,8 @@ async Task CreateIndexAsync()
                 new SemanticConfiguration("semantic_config", new SemanticPrioritizedFields
                 {
                     TitleField = new SemanticField("section_title"),
-                    ContentFields = { new SemanticField("page_chunk") }
+                    ContentFields = { new SemanticField("page_chunk"), new SemanticField("description") },
+                    KeywordsFields = { new SemanticField("title") }
                 })
             }
         },
@@ -307,6 +328,9 @@ SearchDocument CreateChunkDoc(string text, string heading, string contentType, s
         ["section_title"] = heading,
         ["content_type"] = contentType,
         ["chunk_index"] = chunkIdx,
+        ["source"] = "opcfoundation",
+        ["popularity"] = 1_000_000_000L,
+        ["in_opcfoundation_index"] = true,
     });
 }
 

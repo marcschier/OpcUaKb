@@ -11,6 +11,27 @@ using Microsoft.Extensions.Logging;
 // Cloud Library REST API. Enabled only when credentials are provided.
 // ═══════════════════════════════════════════════════════════════════════
 
+/// <summary>
+/// Metadata captured from the UA-CloudLibrary REST API for a single NodeSet.
+/// Used to enrich search index documents with version/publication info.
+/// </summary>
+sealed class CloudLibEntry
+{
+    public required string BlobName { get; init; }
+    public required string Identifier { get; init; }
+    public required string NamespaceUri { get; init; }
+    public string Version { get; init; } = "";
+    public DateTimeOffset? PublicationDate { get; init; }
+    public DateTimeOffset? LastModifiedDate { get; init; }
+    public string Title { get; init; } = "";
+    public string Description { get; init; } = "";
+    public string License { get; init; } = "";
+    public string CopyrightText { get; init; } = "";
+    public string DocumentationUrl { get; init; } = "";
+    public string[] Keywords { get; init; } = [];
+    public long NumberOfDownloads { get; init; }
+}
+
 sealed class CloudLibraryClient
 {
     const string BaseUrl = "https://uacloudlibrary.opcfoundation.org";
@@ -53,14 +74,14 @@ sealed class CloudLibraryClient
 
     /// <summary>
     /// Downloads all NodeSet XMLs from the Cloud Library and stores them in blob storage.
-    /// Returns the list of blob names for downstream parsing.
+    /// Returns the list of entries with full metadata for downstream parsing.
     /// </summary>
-    public async Task<List<string>> DownloadAllNodeSetsAsync()
+    public async Task<List<CloudLibEntry>> DownloadAllNodeSetsAsync()
     {
-        var blobNames = new List<string>();
+        var entries = new List<CloudLibEntry>();
 
-        // Step 1: List all available NodeSets with pagination
-        var allModels = new List<(string id, string namespaceUri, string title)>();
+        // Step 1: List all available NodeSets with pagination (with metadata)
+        var allModels = new List<CloudLibEntry>();
         int offset = 0;
 
         while (true)
@@ -79,9 +100,25 @@ sealed class CloudLibraryClient
                 var nodeset = item?["nodeset"];
                 var identifier = nodeset?["identifier"]?.ToString();
                 var nsUri = nodeset?["namespaceUri"]?.GetValue<string>() ?? "";
-                var title = item?["title"]?.GetValue<string>() ?? nsUri;
-                if (!string.IsNullOrEmpty(identifier))
-                    allModels.Add((identifier, nsUri, title));
+                if (string.IsNullOrEmpty(identifier)) continue;
+
+                var safeName = SanitizeBlobName(nsUri, identifier);
+                allModels.Add(new CloudLibEntry
+                {
+                    BlobName = $"{BlobPrefix}{safeName}.xml",
+                    Identifier = identifier,
+                    NamespaceUri = nsUri,
+                    Version = nodeset?["version"]?.GetValue<string>() ?? "",
+                    PublicationDate = TryParseDate(nodeset?["publicationDate"]?.ToString()),
+                    LastModifiedDate = TryParseDate(nodeset?["lastModifiedDate"]?.ToString()),
+                    Title = item?["title"]?.GetValue<string>() ?? nsUri,
+                    Description = item?["description"]?.GetValue<string>() ?? "",
+                    License = item?["license"]?.GetValue<string>() ?? "",
+                    CopyrightText = item?["copyrightText"]?.GetValue<string>() ?? "",
+                    DocumentationUrl = item?["documentationUrl"]?.GetValue<string>() ?? "",
+                    Keywords = item?["keywords"]?.AsArray().Select(k => k?.ToString() ?? "").Where(s => !string.IsNullOrEmpty(s)).ToArray() ?? [],
+                    NumberOfDownloads = TryReadLong(item?["numberOfDownloads"]) ?? TryReadLong(nodeset?["numberOfDownloads"]) ?? 0,
+                });
             }
 
             _log.LogInformation("[CLOUDLIB] Listed {Count} models (offset={Offset})",
@@ -96,13 +133,12 @@ sealed class CloudLibraryClient
         // Step 2: Download each NodeSet XML
         int downloaded = 0, skipped = 0, errors = 0;
 
-        foreach (var (id, nsUri, title) in allModels)
+        foreach (var model in allModels)
         {
+            var id = model.Identifier;
             try
             {
-                // Use the namespace URI hash as blob name to avoid duplicates
-                var safeName = SanitizeBlobName(nsUri, id);
-                var blobName = $"{BlobPrefix}{safeName}.xml";
+                var blobName = model.BlobName;
 
                 // Check if already downloaded (skip if recent)
                 var blobClient = _container.GetBlobClient(blobName);
@@ -112,7 +148,7 @@ sealed class CloudLibraryClient
                     if (props.LastModified > DateTimeOffset.UtcNow.AddDays(-7))
                     {
                         skipped++;
-                        blobNames.Add(blobName);
+                        entries.Add(model);
                         continue;
                     }
                 }
@@ -152,7 +188,7 @@ sealed class CloudLibraryClient
                     BinaryData.FromString(nodesetXml),
                     overwrite: true);
 
-                blobNames.Add(blobName);
+                entries.Add(model);
                 downloaded++;
 
                 if (downloaded % 20 == 0)
@@ -172,7 +208,30 @@ sealed class CloudLibraryClient
         _log.LogInformation("[CLOUDLIB] Completed: Downloaded={D} Skipped={S} Errors={E}",
             downloaded, skipped, errors);
 
-        return blobNames;
+        return entries;
+    }
+
+    static DateTimeOffset? TryParseDate(string? s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return null;
+        return DateTimeOffset.TryParse(s, out var dt) ? dt : null;
+    }
+
+    static long? TryReadLong(JsonNode? node)
+    {
+        if (node == null) return null;
+        try
+        {
+            // JSON numbers come through as integer-typed values
+            if (node.GetValueKind() == System.Text.Json.JsonValueKind.Number)
+                return node.GetValue<long>();
+            var s = node.ToString();
+            return long.TryParse(s, out var v) ? v : null;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     async Task<string?> RetryRequestAsync(string url)
