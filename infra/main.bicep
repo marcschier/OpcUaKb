@@ -323,6 +323,14 @@ resource mcpServer 'Microsoft.App/containerApps@2024-03-01' = {
               name: 'MCP_API_KEY'
               secretRef: 'search-api-key'
             }
+            {
+              name: 'MCP_REQUIRE_AUTH'
+              value: 'false'
+            }
+            {
+              name: 'MCP_ANON_RATE_LIMIT'
+              value: '10'
+            }
           ]
         }
       ]
