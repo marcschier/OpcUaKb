@@ -194,13 +194,30 @@ https://<prefix>-search.search.windows.net/knowledgebases/<prefix>-kb/mcp?api-ve
 
 ### Custom MCP Server (9 structured tools)
 
-Hosted on Azure Container Apps with scale-to-zero. Requires `api-key` header.
+Hosted on Azure Container Apps with scale-to-zero and configurable rate limiting.
 
 ```
 https://<mcp-server-fqdn>/
 ```
 
-Local via dotnet tool:
+**Access tiers:**
+
+| Tier | Identification | Default Limit | Behavior |
+|------|---------------|---------------|----------|
+| Authenticated | Valid `api-key` header | Unlimited | Full access, prioritized |
+| Anonymous | No key (per IP) | 10 req/min | Rate-limited, 429 if exceeded |
+| Blocked | No key + `MCP_REQUIRE_AUTH=true` | Rejected | 401 Unauthorized |
+
+**Rate limiting configuration (env vars):**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MCP_API_KEY` | from `SEARCH_API_KEY` | API key for authenticated access |
+| `MCP_REQUIRE_AUTH` | `false` | Set `true` to block all anonymous requests |
+| `MCP_ANON_RATE_LIMIT` | `10` | Max requests/min for anonymous callers (per IP) |
+| `MCP_AUTH_RATE_LIMIT` | `0` | Max requests/min for authenticated callers (0 = unlimited) |
+
+Local via dotnet tool (no rate limiting):
 
 ```bash
 opcua-kb-mcp --stdio
