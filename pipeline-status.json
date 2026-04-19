@@ -1,0 +1,15 @@
+{
+  "CurrentPhase": "pipeline",
+  "Status": "completed",
+  "LastUpdated": "2026-04-17T22:22:53.8114697+00:00",
+  "ElapsedSeconds": 20925,
+  "CrawlDownloaded": 0,
+  "CrawlSkipped": 1,
+  "CrawlErrors": 0,
+  "CrawlQueued": 0,
+  "IndexHtmlBlobs": 4511,
+  "IndexChunks": 47588,
+  "IndexEmbedded": 47508,
+  "IndexUploaded": 47588,
+  "LastError": null
+}

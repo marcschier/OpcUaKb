@@ -168,6 +168,11 @@ try
             var cloudDocs = await cloudParser.ParseBlobsAsync(cloudLibBlobNames);
             log.LogInformation("[CLOUDLIB] Parsed {Count} NodeSet documents", cloudDocs.Count);
 
+            // Generate summaries BEFORE mutating content_type — GenerateSummaries filters by
+            // content_type == "nodeset", so it must run while docs still have the original tag.
+            var cloudSummaries = cloudParser.GenerateSummaries(cloudDocs);
+            log.LogInformation("[CLOUDLIB] Generated {Count} summary documents", cloudSummaries.Count);
+
             // Tag all cloudlib docs with distinct content_type + overlay API metadata
             foreach (var doc in cloudDocs)
             {
@@ -227,8 +232,7 @@ try
                 }
             }
 
-            // Generate summaries for CloudLibrary nodesets
-            var cloudSummaries = cloudParser.GenerateSummaries(cloudDocs);
+            // Generate summaries for CloudLibrary nodesets (already generated above before mutation)
             foreach (var doc in cloudSummaries)
             {
                 var ct = doc.TryGetValue("content_type", out var v) ? v?.ToString() ?? "" : "";
