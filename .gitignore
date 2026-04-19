@@ -5,3 +5,5 @@ obj/
 *.suo
 appsettings.*.json
 nupkg/
+
+pipeline-status.json
