@@ -97,7 +97,8 @@ DEPLOY_OUTPUT=$(az deployment group create \
 SEARCH_ENDPOINT=$(echo "$DEPLOY_OUTPUT" | jq -r '.searchEndpoint.value')
 SEARCH_API_KEY=$(echo "$DEPLOY_OUTPUT" | jq -r '.searchApiKey.value')
 AOAI_ENDPOINT=$(echo "$DEPLOY_OUTPUT" | jq -r '.aoaiEndpoint.value')
-AOAI_API_KEY=$(echo "$DEPLOY_OUTPUT" | jq -r '.aoaiApiKey.value')
+FOUNDRY_ENDPOINT=$(echo "$DEPLOY_OUTPUT" | jq -r '.foundryEndpoint.value')
+FOUNDRY_PROJECT_ENDPOINT=$(echo "$DEPLOY_OUTPUT" | jq -r '.foundryProjectEndpoint.value')
 STORAGE_CONN_STR=$(echo "$DEPLOY_OUTPUT" | jq -r '.storageConnectionString.value')
 ACR_LOGIN_SERVER=$(echo "$DEPLOY_OUTPUT" | jq -r '.acrLoginServer.value')
 MCP_ENDPOINT=$(echo "$DEPLOY_OUTPUT" | jq -r '.mcpEndpoint.value')
@@ -243,7 +244,8 @@ echo -e "${GREEN}═════════════════════
 echo ""
 echo -e "  Resource Group:   ${BLUE}${RESOURCE_GROUP}${NC}"
 echo -e "  Search Endpoint:  ${BLUE}${SEARCH_ENDPOINT}${NC}"
-echo -e "  OpenAI Endpoint:  ${BLUE}${AOAI_ENDPOINT}${NC}"
+echo -e "  Foundry Endpoint: ${BLUE}${FOUNDRY_ENDPOINT}${NC}"
+echo -e "  Foundry Project:  ${BLUE}${FOUNDRY_PROJECT_ENDPOINT}${NC}"
 echo -e "  ACR Server:       ${BLUE}${ACR_LOGIN_SERVER}${NC}"
 echo -e "  KB MCP Endpoint:  ${BLUE}${MCP_ENDPOINT}${NC}"
 echo -e "  MCP Server:       ${BLUE}https://${MCP_SERVER_FQDN}${NC}"

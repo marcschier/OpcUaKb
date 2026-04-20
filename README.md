@@ -283,7 +283,9 @@ Add to `claude_desktop_config.json`:
 
 ```bash
 export SEARCH_API_KEY="$(az search admin-key show --service-name <prefix>-search -g <rg> --query primaryKey -o tsv)"
-export AOAI_API_KEY="$(az cognitiveservices account keys list --name <prefix>-openai -g <rg> --query key1 -o tsv)"
+# Auth to AOAI is keyless via DefaultAzureCredential — `az login` first and
+# ensure your user has the `Cognitive Services OpenAI User` role on the
+# Foundry account (`<prefix>-foundry`).
 dotnet run --project src/OpcUaKb.Chat
 ```
 
@@ -307,8 +309,10 @@ All HTTP calls include retry logic with exponential backoff for 429/503 errors.
 export STORAGE_CONNECTION_STRING="$(az storage account show-connection-string --name <prefix>storage -g <rg> -o tsv)"
 export SEARCH_ENDPOINT="https://<prefix>-search.search.windows.net"
 export SEARCH_API_KEY="$(az search admin-key show --service-name <prefix>-search -g <rg> --query primaryKey -o tsv)"
-export AOAI_ENDPOINT="https://<prefix>-openai.openai.azure.com"
-export AOAI_API_KEY="$(az cognitiveservices account keys list --name <prefix>-openai -g <rg> --query key1 -o tsv)"
+export AOAI_ENDPOINT="https://<prefix>-foundry.openai.azure.com"
+# Auth to AOAI is keyless via DefaultAzureCredential — `az login` first and
+# ensure your user has the `Cognitive Services OpenAI User` role on the
+# Foundry account (`<prefix>-foundry`).
 
 # Optional: UA-CloudLibrary integration
 export CLOUDLIB_USERNAME="your-email@example.com"

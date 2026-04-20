@@ -6,6 +6,8 @@ using System.Text.RegularExpressions;
 using AngleSharp;
 using AngleSharp.Html.Parser;
 using Azure;
+using Azure.Core;
+using Azure.Identity;
 using Azure.Search.Documents;
 using Azure.Search.Documents.Indexes;
 using Azure.Search.Documents.Indexes.Models;
@@ -20,9 +22,8 @@ var searchApiKey = Environment.GetEnvironmentVariable("SEARCH_API_KEY")
 var storageConnStr = Environment.GetEnvironmentVariable("STORAGE_CONNECTION_STRING")
     ?? throw new InvalidOperationException("Set STORAGE_CONNECTION_STRING");
 var aoaiEndpoint = Environment.GetEnvironmentVariable("AOAI_ENDPOINT")
-    ?? "https://opcua-kb-openai.openai.azure.com";
-var aoaiApiKey = Environment.GetEnvironmentVariable("AOAI_API_KEY")
-    ?? throw new InvalidOperationException("Set AOAI_API_KEY");
+    ?? "https://opcua-kb-foundry.openai.azure.com";
+TokenCredential credential = new DefaultAzureCredential();
 
 const string IndexName = "opcua-content-index";
 const string ContainerName = "opcua-content";
@@ -37,7 +38,6 @@ var indexClient = new SearchIndexClient(new Uri(searchEndpoint), new AzureKeyCre
 var searchClient = indexClient.GetSearchClient(IndexName);
 var blobContainer = new BlobContainerClient(storageConnStr, ContainerName);
 using var http = new HttpClient();
-http.DefaultRequestHeaders.Add("api-key", aoaiApiKey);
 
 // ── Step 1: Create or update search index ──────────────────────────────
 Console.WriteLine("Creating/updating search index...");
@@ -338,11 +338,15 @@ async Task<List<float[]>> GetEmbeddingsAsync(List<string> texts)
 {
     var body = new { input = texts, model = EmbeddingDeployment };
     var json = JsonSerializer.Serialize(body);
+    var token = await credential.GetTokenAsync(
+        new TokenRequestContext(new[] { "https://cognitiveservices.azure.com/.default" }),
+        default);
     var request = new HttpRequestMessage(HttpMethod.Post,
         $"{aoaiEndpoint}/openai/deployments/{EmbeddingDeployment}/embeddings?api-version=2024-06-01")
     {
         Content = new StringContent(json, Encoding.UTF8, "application/json")
     };
+    request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token.Token);
 
     var response = await http.SendAsync(request);
     response.EnsureSuccessStatusCode();

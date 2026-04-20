@@ -9,6 +9,8 @@ using AngleSharp;
 using AngleSharp.Dom;
 using AngleSharp.Html.Parser;
 using Azure;
+using Azure.Core;
+using Azure.Identity;
 using Azure.Search.Documents;
 using Azure.Search.Documents.Indexes;
 using Azure.Search.Documents.Indexes.Models;
@@ -38,7 +40,7 @@ var storageConnStr = Require("STORAGE_CONNECTION_STRING");
 var searchEndpoint = Require("SEARCH_ENDPOINT");
 var searchApiKey   = Require("SEARCH_API_KEY");
 var aoaiEndpoint   = Require("AOAI_ENDPOINT");
-var aoaiApiKey     = Require("AOAI_API_KEY");
+var credential     = new DefaultAzureCredential();
 
 var statusTracker = new PipelineStatusTracker(
     new BlobContainerClient(storageConnStr, "opcua-content"),
@@ -67,7 +69,7 @@ try
     var indexSw = Stopwatch.StartNew();
     var indexer = new OpcUaIndexer(
         storageConnStr, searchEndpoint, searchApiKey,
-        aoaiEndpoint, aoaiApiKey,
+        aoaiEndpoint, credential,
         loggerFactory.CreateLogger<OpcUaIndexer>(), statusTracker);
     await indexer.RunAsync();
 
@@ -661,6 +663,7 @@ sealed class OpcUaIndexer
     readonly SearchClient _searchClient;
     readonly BlobContainerClient _container;
     readonly HttpClient _http;
+    readonly TokenCredential _credential;
     readonly string _aoaiEndpoint;
     readonly string _storageConn;
     readonly ILogger _log;
@@ -668,17 +671,17 @@ sealed class OpcUaIndexer
     VersionCatalog _versionCatalog = null!;
 
     public OpcUaIndexer(string storageConn, string searchEndpoint, string searchApiKey,
-        string aoaiEndpoint, string aoaiApiKey, ILogger logger, PipelineStatusTracker tracker)
+        string aoaiEndpoint, TokenCredential credential, ILogger logger, PipelineStatusTracker tracker)
     {
         _log = logger;
         _tracker = tracker;
         _aoaiEndpoint = aoaiEndpoint;
         _storageConn = storageConn;
+        _credential = credential;
         _indexClient = new SearchIndexClient(new Uri(searchEndpoint), new AzureKeyCredential(searchApiKey));
         _searchClient = _indexClient.GetSearchClient(IndexName);
         _container = new BlobContainerClient(storageConn, ContainerName);
         _http = new HttpClient();
-        _http.DefaultRequestHeaders.Add("api-key", aoaiApiKey);
     }
 
     public async Task RunAsync()
@@ -950,17 +953,17 @@ sealed class OpcUaIndexer
     async Task<List<float[]>> GetEmbeddingsAsync(List<string> texts)
     {
         var body = JsonSerializer.Serialize(new { input = texts, model = EmbeddingDeployment });
-        var req = new HttpRequestMessage(HttpMethod.Post,
-            $"{_aoaiEndpoint}/openai/deployments/{EmbeddingDeployment}/embeddings?api-version=2024-06-01")
-        { Content = new StringContent(body, Encoding.UTF8, "application/json") };
         var resp = await RetryHelper.RetryAsync(
-            () =>
+            async () =>
             {
-                var clone = new HttpRequestMessage(req.Method, req.RequestUri)
+                var token = await _credential.GetTokenAsync(
+                    new TokenRequestContext(new[] { "https://cognitiveservices.azure.com/.default" }),
+                    default);
+                var clone = new HttpRequestMessage(HttpMethod.Post,
+                    $"{_aoaiEndpoint}/openai/deployments/{EmbeddingDeployment}/embeddings?api-version=2024-06-01")
                 { Content = new StringContent(body, Encoding.UTF8, "application/json") };
-                foreach (var h in _http.DefaultRequestHeaders)
-                    clone.Headers.TryAddWithoutValidation(h.Key, h.Value);
-                return _http.SendAsync(clone);
+                clone.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token.Token);
+                return await _http.SendAsync(clone);
             }, _log);
         resp.EnsureSuccessStatusCode();
         var json = JsonNode.Parse(await resp.Content.ReadAsStringAsync())!;
