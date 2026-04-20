@@ -5,7 +5,7 @@ using System.Text.Json.Nodes;
 
 // ── Configuration ──────────────────────────────────────────────────────
 const string SearchEndpoint     = "https://opcua-kb-search.search.windows.net";
-const string AoaiEndpoint       = "https://opcua-kb-openai.openai.azure.com";
+const string AoaiEndpoint       = "https://opcua-kb-foundry.openai.azure.com";
 const string GptDeployment      = "gpt-4o";
 const string GptModel           = "gpt-4o";
 const string KnowledgeSourceName = "opcua-web-ks";

@@ -2,6 +2,8 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Azure.Core;
+using Azure.Identity;
 
 // ═══════════════════════════════════════════════════════════════════════
 // OPC UA Knowledge Base Chatbot
@@ -9,7 +11,7 @@ using System.Text.Json.Nodes;
 // ═══════════════════════════════════════════════════════════════════════
 
 const string SearchEndpoint    = "https://opcua-kb-search.search.windows.net";
-const string AoaiEndpoint      = "https://opcua-kb-openai.openai.azure.com";
+const string AoaiEndpoint      = "https://opcua-kb-foundry.openai.azure.com";
 const string KnowledgeBaseName = "opcua-kb";
 const string GptDeployment     = "gpt-4o";
 const string ApiVersion        = "2025-11-01-preview";
@@ -17,14 +19,12 @@ const string AoaiApiVersion    = "2024-10-21";
 
 var searchApiKey = Environment.GetEnvironmentVariable("SEARCH_API_KEY")
     ?? throw new InvalidOperationException("Set SEARCH_API_KEY environment variable");
-var aoaiApiKey = Environment.GetEnvironmentVariable("AOAI_API_KEY")
-    ?? throw new InvalidOperationException("Set AOAI_API_KEY environment variable");
+TokenCredential aoaiCredential = new DefaultAzureCredential();
 
 using var searchHttp = new HttpClient();
 searchHttp.DefaultRequestHeaders.Add("api-key", searchApiKey);
 
 using var aoaiHttp = new HttpClient();
-aoaiHttp.DefaultRequestHeaders.Add("api-key", aoaiApiKey);
 
 var conversationHistory = new List<ChatMessage>();
 var systemPrompt = """
@@ -170,9 +170,16 @@ async Task<string> ChatCompletionAsync(string userQuery, string? groundingData)
         max_tokens = 2000
     };
 
-    var response = await aoaiHttp.PostAsync(
-        $"{AoaiEndpoint}/openai/deployments/{GptDeployment}/chat/completions?api-version={AoaiApiVersion}",
-        new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json"));
+    var token = await aoaiCredential.GetTokenAsync(
+        new TokenRequestContext(new[] { "https://cognitiveservices.azure.com/.default" }),
+        default);
+    var req = new HttpRequestMessage(HttpMethod.Post,
+        $"{AoaiEndpoint}/openai/deployments/{GptDeployment}/chat/completions?api-version={AoaiApiVersion}")
+    {
+        Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json")
+    };
+    req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);
+    var response = await aoaiHttp.SendAsync(req);
 
     response.EnsureSuccessStatusCode();
     var json = JsonNode.Parse(await response.Content.ReadAsStringAsync());

@@ -30,7 +30,7 @@ param cloudLibPassword string = ''
 
 // ── Derived names ────────────────────────────────────────────────────
 var searchName = '${prefix}-search'
-var openaiName = '${prefix}-openai'
+var foundryName = '${prefix}-foundry'
 var storageName = take(replace('${prefix}storage', '-', ''), 24)
 var docaiName = '${prefix}-docai'
 var acrName = replace('${prefix}registry', '-', '')
@@ -59,22 +59,40 @@ resource search 'Microsoft.Search/searchServices@2024-06-01-preview' = {
   }
 }
 
-// ── 2. Azure OpenAI ─────────────────────────────────────────────────
-resource openai 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
-  name: openaiName
+// ── 2. Azure AI Foundry (AIServices account + Project) ──────────────
+resource foundry 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
+  name: foundryName
   location: location
-  kind: 'OpenAI'
+  kind: 'AIServices'
+  identity: {
+    type: 'SystemAssigned'
+  }
   sku: {
     name: 'S0'
   }
   properties: {
-    customSubDomainName: openaiName
+    customSubDomainName: foundryName
     publicNetworkAccess: 'Enabled'
+    allowProjectManagement: true
+    disableLocalAuth: false
+  }
+}
+
+resource foundryProject 'Microsoft.CognitiveServices/accounts/projects@2025-04-01-preview' = {
+  parent: foundry
+  name: 'default'
+  location: location
+  identity: {
+    type: 'SystemAssigned'
+  }
+  properties: {
+    displayName: 'OPC UA Knowledge Base'
+    description: 'Foundry project for the OPC UA Knowledge Base (agents, evaluations, models)'
   }
 }
 
 resource gpt4oDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' = {
-  parent: openai
+  parent: foundry
   name: 'gpt-4o'
   sku: {
     name: 'Standard'
@@ -90,7 +108,7 @@ resource gpt4oDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-
 }
 
 resource embeddingDeployment 'Microsoft.CognitiveServices/accounts/deployments@2024-10-01' = {
-  parent: openai
+  parent: foundry
   name: 'text-embedding-3-large'
   sku: {
     name: 'Standard'
@@ -177,6 +195,9 @@ resource containerEnv 'Microsoft.App/managedEnvironments@2024-03-01' = {
 resource pipelineJob 'Microsoft.App/jobs@2024-03-01' = {
   name: jobName
   location: location
+  identity: {
+    type: 'SystemAssigned'
+  }
   properties: {
     environmentId: containerEnv.id
     configuration: {
@@ -206,10 +227,6 @@ resource pipelineJob 'Microsoft.App/jobs@2024-03-01' = {
         {
           name: 'search-api-key'
           value: search.listAdminKeys().primaryKey
-        }
-        {
-          name: 'aoai-api-key'
-          value: openai.listKeys().key1
         }
         {
           name: 'cloudlib-username'
@@ -245,11 +262,7 @@ resource pipelineJob 'Microsoft.App/jobs@2024-03-01' = {
             }
             {
               name: 'AOAI_ENDPOINT'
-              value: openai.properties.endpoint
-            }
-            {
-              name: 'AOAI_API_KEY'
-              secretRef: 'aoai-api-key'
+              value: foundry.properties.endpoint
             }
             {
               name: 'CLOUDLIB_USERNAME'
@@ -352,19 +365,30 @@ resource mcpServer 'Microsoft.App/containerApps@2024-03-01' = {
   }
 }
 
-// ── 9. Role assignment — Search → OpenAI (Cognitive Services User) ──
-var cognitiveServicesUserRole = subscriptionResourceId(
+// ── 9. Role assignments — MIs → Foundry ─────────────────────────────
+// Cognitive Services OpenAI User (data-plane access to model deployments)
+var cognitiveServicesOpenAIUserRole = subscriptionResourceId(
   'Microsoft.Authorization/roleDefinitions',
-  'a97b65f3-24c7-4388-baec-2e87135dc908'
+  '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd'
 )
 
-resource searchOpenaiRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(search.id, openai.id, cognitiveServicesUserRole)
-  scope: openai
+resource searchFoundryRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(search.id, foundry.id, cognitiveServicesOpenAIUserRole)
+  scope: foundry
   properties: {
     principalId: search.identity.principalId
     principalType: 'ServicePrincipal'
-    roleDefinitionId: cognitiveServicesUserRole
+    roleDefinitionId: cognitiveServicesOpenAIUserRole
+  }
+}
+
+resource pipelineJobFoundryRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(pipelineJob.id, foundry.id, cognitiveServicesOpenAIUserRole)
+  scope: foundry
+  properties: {
+    principalId: pipelineJob.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: cognitiveServicesOpenAIUserRole
   }
 }
 
@@ -392,10 +416,12 @@ output searchEndpoint string = 'https://${search.name}.search.windows.net'
 @secure()
 output searchApiKey string = search.listAdminKeys().primaryKey
 
-output aoaiEndpoint string = openai.properties.endpoint
+output foundryEndpoint string = foundry.properties.endpoint
 
-@secure()
-output aoaiApiKey string = openai.listKeys().key1
+output foundryProjectEndpoint string = 'https://${foundry.name}.services.ai.azure.com/api/projects/${foundryProject.name}'
+
+// Backward-compat: aoaiEndpoint still emitted (same value as foundryEndpoint)
+output aoaiEndpoint string = foundry.properties.endpoint
 
 @secure()
 output storageConnectionString string = 'DefaultEndpointsProtocol=https;AccountName=${storageAccount.name};AccountKey=${storageAccount.listKeys().keys[0].value};EndpointSuffix=${environment().suffixes.storage}'

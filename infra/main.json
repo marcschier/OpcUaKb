@@ -6,7 +6,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.36.1.42791",
-      "templateHash": "14448762200777266695"
+      "templateHash": "14344947361656307452"
     }
   },
   "parameters": {
@@ -63,7 +63,7 @@
   },
   "variables": {
     "searchName": "[format('{0}-search', parameters('prefix'))]",
-    "openaiName": "[format('{0}-openai', parameters('prefix'))]",
+    "foundryName": "[format('{0}-foundry', parameters('prefix'))]",
     "storageName": "[take(replace(format('{0}storage', parameters('prefix')), '-', ''), 24)]",
     "docaiName": "[format('{0}-docai', parameters('prefix'))]",
     "acrName": "[replace(format('{0}registry', parameters('prefix')), '-', '')]",
@@ -73,7 +73,7 @@
     "workbookName": "[guid(resourceGroup().id, 'opcua-pipeline-dashboard')]",
     "containerImage": "[if(empty(parameters('pipelineImage')), 'mcr.microsoft.com/dotnet/runtime:9.0', parameters('pipelineImage'))]",
     "mcpAppName": "[format('{0}-mcp-server', parameters('prefix'))]",
-    "cognitiveServicesUserRole": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'a97b65f3-24c7-4388-baec-2e87135dc908')]",
+    "cognitiveServicesOpenAIUserRole": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')]",
     "workbookContent": "{\"version\":\"Notebook/1.0\",\"items\":[{\"type\":1,\"content\":{\"json\":\"# OPC UA Knowledge Base Pipeline Dashboard\\n\\nMonitors crawl + index pipeline for reference.opcfoundation.org\"},\"name\":\"header\"},{\"type\":3,\"content\":{\"version\":\"KqlItem/1.0\",\"query\":\"ContainerAppConsoleLogs_CL\\n| where ContainerGroupName_s startswith \\\"opcua-pipeline-job\\\"\\n| where Log_s has \\\"[PIPELINE]\\\"\\n| parse Log_s with * \\\"Phase=\\\" Phase:string \\\" Status=\\\" Status:string \\\" \\\" *\\n| project TimeGenerated, Phase, Status\\n| order by TimeGenerated desc\\n| take 20\",\"size\":1,\"title\":\"Recent Pipeline Events\",\"timeContext\":{\"durationMs\":604800000},\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\"},\"name\":\"pipeline-events\"},{\"type\":3,\"content\":{\"version\":\"KqlItem/1.0\",\"query\":\"ContainerAppConsoleLogs_CL\\n| where ContainerGroupName_s startswith \\\"opcua-pipeline-job\\\"\\n| where Log_s has \\\"[CRAWL]\\\" and Log_s has \\\"Downloaded=\\\"\\n| parse Log_s with * \\\"Downloaded=\\\" Downloaded:long \\\" Skipped=\\\" Skipped:long \\\" Errors=\\\" Errors:long \\\" Queued=\\\" Queued:long\\n| project TimeGenerated, Downloaded, Skipped, Errors, Queued\\n| order by TimeGenerated asc\",\"size\":0,\"title\":\"Crawl Progress Over Time\",\"timeContext\":{\"durationMs\":86400000},\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\",\"visualization\":\"linechart\",\"chartSettings\":{\"yAxis\":[\"Downloaded\",\"Queued\",\"Errors\"]}},\"name\":\"crawl-progress\"},{\"type\":3,\"content\":{\"version\":\"KqlItem/1.0\",\"query\":\"ContainerAppConsoleLogs_CL\\n| where ContainerGroupName_s startswith \\\"opcua-pipeline-job\\\"\\n| where Log_s has \\\"[CRAWL]\\\" and Log_s has \\\"Downloaded=\\\"\\n| parse Log_s with * \\\"Downloaded=\\\" Downloaded:long \\\" Skipped=\\\" Skipped:long \\\" Errors=\\\" Errors:long *\\n| summarize MaxDownloaded=max(Downloaded), MaxSkipped=max(Skipped), TotalErrors=max(Errors) by bin(TimeGenerated, 1h)\\n| order by TimeGenerated desc\\n| take 1\",\"size\":4,\"title\":\"Latest Crawl Stats\",\"timeContext\":{\"durationMs\":86400000},\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\",\"visualization\":\"tiles\",\"tileSettings\":{\"showBorder\":true}},\"name\":\"crawl-stats\"},{\"type\":3,\"content\":{\"version\":\"KqlItem/1.0\",\"query\":\"ContainerAppConsoleLogs_CL\\n| where ContainerGroupName_s startswith \\\"opcua-pipeline-job\\\"\\n| where Log_s has \\\"[INDEX]\\\" and Log_s has \\\"Phase=\\\"\\n| parse Log_s with * \\\"Phase=\\\" Phase:string \\\" \\\" *\\n| extend Embedded = extract(\\\"Embedded=([0-9]+)\\\", 1, Log_s)\\n| extend Uploaded = extract(\\\"Uploaded=([0-9]+)\\\", 1, Log_s)\\n| extend Chunks = extract(\\\"Chunks=([0-9]+)\\\", 1, Log_s)\\n| extend Parsed = extract(\\\"Parsed=([0-9]+)\\\", 1, Log_s)\\n| project TimeGenerated, Phase, Parsed, Chunks, Embedded, Uploaded\\n| order by TimeGenerated asc\",\"size\":0,\"title\":\"Index Progress Over Time\",\"timeContext\":{\"durationMs\":86400000},\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\",\"visualization\":\"linechart\"},\"name\":\"index-progress\"},{\"type\":3,\"content\":{\"version\":\"KqlItem/1.0\",\"query\":\"ContainerAppConsoleLogs_CL\\n| where ContainerGroupName_s startswith \\\"opcua-pipeline-job\\\"\\n| where Log_s has \\\"Error=\\\" or Log_s has \\\"error\\\" or Log_s has \\\"Warning\\\"\\n| project TimeGenerated, Log_s\\n| order by TimeGenerated desc\\n| take 50\",\"size\":1,\"title\":\"Errors & Warnings\",\"timeContext\":{\"durationMs\":604800000},\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\",\"visualization\":\"table\"},\"name\":\"errors\"},{\"type\":3,\"content\":{\"version\":\"KqlItem/1.0\",\"query\":\"ContainerAppConsoleLogs_CL\\n| where ContainerGroupName_s startswith \\\"opcua-pipeline-job\\\"\\n| where Log_s has \\\"[PIPELINE]\\\" and Log_s has \\\"TotalElapsedSec=\\\"\\n| parse Log_s with * \\\"TotalElapsedSec=\\\" ElapsedSec:long\\n| project TimeGenerated, DurationMin=ElapsedSec/60.0\\n| order by TimeGenerated desc\\n| take 10\",\"size\":1,\"title\":\"Execution History (Duration in Minutes)\",\"timeContext\":{\"durationMs\":2592000000},\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\",\"visualization\":\"barchart\"},\"name\":\"exec-history\"}],\"isLocked\":false}\r\n"
   },
   "resources": {
@@ -95,24 +95,45 @@
         "partitionCount": 1
       }
     },
-    "openai": {
+    "foundry": {
       "type": "Microsoft.CognitiveServices/accounts",
       "apiVersion": "2024-10-01",
-      "name": "[variables('openaiName')]",
+      "name": "[variables('foundryName')]",
       "location": "[parameters('location')]",
-      "kind": "OpenAI",
+      "kind": "AIServices",
+      "identity": {
+        "type": "SystemAssigned"
+      },
       "sku": {
         "name": "S0"
       },
       "properties": {
-        "customSubDomainName": "[variables('openaiName')]",
-        "publicNetworkAccess": "Enabled"
+        "customSubDomainName": "[variables('foundryName')]",
+        "publicNetworkAccess": "Enabled",
+        "allowProjectManagement": true,
+        "disableLocalAuth": false
       }
+    },
+    "foundryProject": {
+      "type": "Microsoft.CognitiveServices/accounts/projects",
+      "apiVersion": "2025-04-01-preview",
+      "name": "[format('{0}/{1}', variables('foundryName'), 'default')]",
+      "location": "[parameters('location')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "displayName": "OPC UA Knowledge Base",
+        "description": "Foundry project for the OPC UA Knowledge Base (agents, evaluations, models)"
+      },
+      "dependsOn": [
+        "foundry"
+      ]
     },
     "gpt4oDeployment": {
       "type": "Microsoft.CognitiveServices/accounts/deployments",
       "apiVersion": "2024-10-01",
-      "name": "[format('{0}/{1}', variables('openaiName'), 'gpt-4o')]",
+      "name": "[format('{0}/{1}', variables('foundryName'), 'gpt-4o')]",
       "sku": {
         "name": "Standard",
         "capacity": 30
@@ -125,13 +146,13 @@
         }
       },
       "dependsOn": [
-        "openai"
+        "foundry"
       ]
     },
     "embeddingDeployment": {
       "type": "Microsoft.CognitiveServices/accounts/deployments",
       "apiVersion": "2024-10-01",
-      "name": "[format('{0}/{1}', variables('openaiName'), 'text-embedding-3-large')]",
+      "name": "[format('{0}/{1}', variables('foundryName'), 'text-embedding-3-large')]",
       "sku": {
         "name": "Standard",
         "capacity": 120
@@ -144,8 +165,8 @@
         }
       },
       "dependsOn": [
-        "gpt4oDeployment",
-        "openai"
+        "foundry",
+        "gpt4oDeployment"
       ]
     },
     "storageAccount": {
@@ -224,6 +245,9 @@
       "apiVersion": "2024-03-01",
       "name": "[variables('jobName')]",
       "location": "[parameters('location')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
       "properties": {
         "environmentId": "[resourceId('Microsoft.App/managedEnvironments', variables('envName'))]",
         "configuration": {
@@ -253,10 +277,6 @@
             {
               "name": "search-api-key",
               "value": "[listAdminKeys('search', '2024-06-01-preview').primaryKey]"
-            },
-            {
-              "name": "aoai-api-key",
-              "value": "[listKeys('openai', '2024-10-01').key1]"
             },
             {
               "name": "cloudlib-username",
@@ -292,11 +312,7 @@
                 },
                 {
                   "name": "AOAI_ENDPOINT",
-                  "value": "[reference('openai').endpoint]"
-                },
-                {
-                  "name": "AOAI_API_KEY",
-                  "secretRef": "aoai-api-key"
+                  "value": "[reference('foundry').endpoint]"
                 },
                 {
                   "name": "CLOUDLIB_USERNAME",
@@ -314,7 +330,7 @@
       "dependsOn": [
         "acr",
         "containerEnv",
-        "openai",
+        "foundry",
         "search",
         "storageAccount"
       ]
@@ -407,19 +423,34 @@
         "search"
       ]
     },
-    "searchOpenaiRoleAssignment": {
+    "searchFoundryRoleAssignment": {
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
-      "scope": "[format('Microsoft.CognitiveServices/accounts/{0}', variables('openaiName'))]",
-      "name": "[guid(resourceId('Microsoft.Search/searchServices', variables('searchName')), resourceId('Microsoft.CognitiveServices/accounts', variables('openaiName')), variables('cognitiveServicesUserRole'))]",
+      "scope": "[format('Microsoft.CognitiveServices/accounts/{0}', variables('foundryName'))]",
+      "name": "[guid(resourceId('Microsoft.Search/searchServices', variables('searchName')), resourceId('Microsoft.CognitiveServices/accounts', variables('foundryName')), variables('cognitiveServicesOpenAIUserRole'))]",
       "properties": {
         "principalId": "[reference('search', '2024-06-01-preview', 'full').identity.principalId]",
         "principalType": "ServicePrincipal",
-        "roleDefinitionId": "[variables('cognitiveServicesUserRole')]"
+        "roleDefinitionId": "[variables('cognitiveServicesOpenAIUserRole')]"
       },
       "dependsOn": [
-        "openai",
+        "foundry",
         "search"
+      ]
+    },
+    "pipelineJobFoundryRoleAssignment": {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[format('Microsoft.CognitiveServices/accounts/{0}', variables('foundryName'))]",
+      "name": "[guid(resourceId('Microsoft.App/jobs', variables('jobName')), resourceId('Microsoft.CognitiveServices/accounts', variables('foundryName')), variables('cognitiveServicesOpenAIUserRole'))]",
+      "properties": {
+        "principalId": "[reference('pipelineJob', '2024-03-01', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal",
+        "roleDefinitionId": "[variables('cognitiveServicesOpenAIUserRole')]"
+      },
+      "dependsOn": [
+        "foundry",
+        "pipelineJob"
       ]
     },
     "workbook": {
@@ -448,13 +479,17 @@
       "type": "securestring",
       "value": "[listAdminKeys('search', '2024-06-01-preview').primaryKey]"
     },
+    "foundryEndpoint": {
+      "type": "string",
+      "value": "[reference('foundry').endpoint]"
+    },
+    "foundryProjectEndpoint": {
+      "type": "string",
+      "value": "[format('https://{0}.services.ai.azure.com/api/projects/{1}', variables('foundryName'), 'default')]"
+    },
     "aoaiEndpoint": {
       "type": "string",
-      "value": "[reference('openai').endpoint]"
-    },
-    "aoaiApiKey": {
-      "type": "securestring",
-      "value": "[listKeys('openai', '2024-10-01').key1]"
+      "value": "[reference('foundry').endpoint]"
     },
     "storageConnectionString": {
       "type": "securestring",
