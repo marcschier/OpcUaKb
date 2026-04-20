@@ -60,7 +60,7 @@ resource search 'Microsoft.Search/searchServices@2024-06-01-preview' = {
 }
 
 // ── 2. Azure AI Foundry (AIServices account + Project) ──────────────
-resource foundry 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
+resource foundry 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' = {
   name: foundryName
   location: location
   kind: 'AIServices'
@@ -215,7 +215,7 @@ resource pipelineJob 'Microsoft.App/jobs@2024-03-01' = {
           passwordSecretRef: 'acr-password'
         }
       ]
-      secrets: [
+      secrets: concat([
         {
           name: 'acr-password'
           value: acr.listCredentials().passwords[0].value
@@ -228,6 +228,7 @@ resource pipelineJob 'Microsoft.App/jobs@2024-03-01' = {
           name: 'search-api-key'
           value: search.listAdminKeys().primaryKey
         }
+      ], empty(cloudLibUsername) ? [] : [
         {
           name: 'cloudlib-username'
           value: cloudLibUsername
@@ -236,7 +237,7 @@ resource pipelineJob 'Microsoft.App/jobs@2024-03-01' = {
           name: 'cloudlib-password'
           value: cloudLibPassword
         }
-      ]
+      ])
     }
     template: {
       containers: [
@@ -247,7 +248,7 @@ resource pipelineJob 'Microsoft.App/jobs@2024-03-01' = {
             cpu: json('2')
             memory: '4Gi'
           }
-          env: [
+          env: concat([
             {
               name: 'STORAGE_CONNECTION_STRING'
               secretRef: 'storage-connection-string'
@@ -264,6 +265,7 @@ resource pipelineJob 'Microsoft.App/jobs@2024-03-01' = {
               name: 'AOAI_ENDPOINT'
               value: foundry.properties.endpoint
             }
+          ], empty(cloudLibUsername) ? [] : [
             {
               name: 'CLOUDLIB_USERNAME'
               secretRef: 'cloudlib-username'
@@ -272,7 +274,7 @@ resource pipelineJob 'Microsoft.App/jobs@2024-03-01' = {
               name: 'CLOUDLIB_PASSWORD'
               secretRef: 'cloudlib-password'
             }
-          ]
+          ])
         }
       ]
     }
