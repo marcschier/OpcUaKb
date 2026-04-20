@@ -236,8 +236,14 @@ try
             foreach (var doc in cloudSummaries)
             {
                 var ct = doc.TryGetValue("content_type", out var v) ? v?.ToString() ?? "" : "";
-                if (!ct.StartsWith("cloudlib_"))
-                    doc["content_type"] = $"cloudlib_{ct}";
+                doc["content_type"] = ct switch
+                {
+                    "nodeset" => "cloudlib_nodeset",
+                    "nodeset_summary" => "cloudlib_summary",
+                    "nodeset_hierarchy" => "cloudlib_hierarchy",
+                    var x when x.StartsWith("cloudlib_") => x,
+                    _ => $"cloudlib_{ct}",
+                };
                 doc["source"] = "cloudlib";
                 doc["popularity"] = 0L; // default; overwritten below if a representative doc matches
                 doc["in_opcfoundation_index"] = false; // default; overwritten below
