@@ -6,13 +6,13 @@ All Azure resources are defined in [`main.bicep`](main.bicep) and deployed via [
 
 | Resource | Derived Name | Purpose |
 |----------|-------------|---------|
-| AI Search (Standard) | `{prefix}-search` | Search index + knowledge base + MCP endpoint |
-| Azure AI Foundry | `{prefix}-foundry` | AIServices account + default project; GPT-4o (30 TPM) + text-embedding-3-large (120 TPM). Managed Identity auth. |
+| AI Search (Standard) | `{prefix}-search` | Search index + knowledge base |
+| Azure AI Foundry | `{prefix}-foundry` | AIServices account + default project; GPT-4o (30 TPM) + text-embedding-3-large (120 TPM). MI auth. |
 | Blob Storage | `{prefix}storage` | Crawled content storage |
 | Container Registry | `{prefix}registry` | Pipeline + MCP server Docker images |
 | Container Apps Environment | `{prefix}-env` | Shared environment for job + app |
-| Container Apps Job | `{prefix}-pipeline-job` | Weekly crawl + index (cron: `0 2 * * 0`, 24h timeout). MI auth. |
-| Container App | `{prefix}-mcp-server` | Hosted MCP server (scale 0–2, HTTP auto-scale) |
+| Container Apps Job | `{prefix}-pipeline-job` | Weekly crawl + index (cron: `0 2 * * 0`, 24h timeout). System MI + Cognitive Services OpenAI User role. |
+| Container App | `{prefix}-mcp-server` | MCP server with 11 tools + RAG (scale 0–2, HTTP auto-scale). System MI + Cognitive Services OpenAI User role. |
 | Log Analytics Workspace | `{prefix}-logs` | Pipeline and MCP server log collection |
 | Azure Monitor Workbook | — | Pipeline dashboard (crawl/index/error tracking) |
 

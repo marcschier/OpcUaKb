@@ -7,7 +7,7 @@ All projects target .NET 10 with nullable enabled and implicit usings.
 | Project | Type | Description |
 |---------|------|-------------|
 | [`OpcUaKb.Pipeline`](OpcUaKb.Pipeline/) | Console (Container Apps Job) | Combined crawl + index + NodeSet parse + CloudLib pipeline |
-| [`OpcUaKb.McpServer`](OpcUaKb.McpServer/) | Web (Container App) | Custom MCP server with 10 tools (HTTP/SSE + stdio) |
+| [`OpcUaKb.McpServer`](OpcUaKb.McpServer/) | Web (Container App) | MCP server with 11 tools — search, RAG Q&A, compliance, modelling (HTTP/SSE + stdio) |
 | [`OpcUaKb.Chat`](OpcUaKb.Chat/) | Console | Interactive chatbot grounded by the knowledge base |
 | [`OpcUaKb.Setup`](OpcUaKb.Setup/) | Console | Creates Web Knowledge Source, Knowledge Base, verifies MCP endpoint |
 | [`OpcUaKb.Crawler`](OpcUaKb.Crawler/) | Console | Standalone BFS web crawler for `*.opcfoundation.org` |
@@ -32,7 +32,7 @@ There are no unit tests — `OpcUaKb.Test` is a console app requiring live Azure
 |---------|---------|---------|
 | `Azure.Search.Documents` | 11.8.0-beta.1 | Pipeline, Indexer, McpServer |
 | `Azure.AI.OpenAI` | 2.9.0-beta.1 | Pipeline, Indexer, Chat |
-| `Azure.Identity` | latest | All projects (DefaultAzureCredential) |
+| `Azure.Identity` | latest | McpServer, Chat (DefaultAzureCredential for AOAI) |
 | `ModelContextProtocol` | 1.2.0 | McpServer |
 
 ## Conventions
@@ -80,6 +80,8 @@ az containerapp job start --name <prefix>-pipeline-job --resource-group <rg>
 
 ## MCP Server
 
+The MCP server is the single endpoint for all 11 tools including RAG Q&A. It connects to Azure AI Search for structured queries and to Azure AI Foundry (GPT-4o) for natural language answer synthesis.
+
 ### Transports
 
 | Mode | Command | Use Case |
@@ -87,14 +89,20 @@ az containerapp job start --name <prefix>-pipeline-job --resource-group <rg>
 | HTTP/SSE (default) | `dotnet run --project src/OpcUaKb.McpServer` | Hosted on Azure Container Apps |
 | stdio | `dotnet run --project src/OpcUaKb.McpServer -- --stdio` | Local use with Claude Desktop, etc. |
 
-### Rate Limiting
+### Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MCP_API_KEY` | from `SEARCH_API_KEY` | API key for authenticated access |
-| `MCP_REQUIRE_AUTH` | `false` | Set `true` to block all anonymous requests |
-| `MCP_ANON_RATE_LIMIT` | `10` | Max requests/min for anonymous callers (per IP) |
-| `MCP_AUTH_RATE_LIMIT` | `0` | Max requests/min for authenticated callers (0 = unlimited) |
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `SEARCH_ENDPOINT` | ✓ | | Azure AI Search endpoint |
+| `SEARCH_API_KEY` | ✓ | | Azure AI Search admin key |
+| `AOAI_ENDPOINT` | | | Azure OpenAI / Foundry endpoint — enables `search_docs_rag` tool |
+| `AOAI_API_KEY` | | | AOAI key auth (falls back to Managed Identity) |
+| `KB_NAME` | | `opcua-kb` | Knowledge base name for RAG retrieval |
+| `GPT_DEPLOYMENT` | | `gpt-4o` | GPT model deployment name |
+| `MCP_API_KEY` | | from `SEARCH_API_KEY` | API key for authenticated access |
+| `MCP_REQUIRE_AUTH` | | `false` | Set `true` to block all anonymous requests |
+| `MCP_ANON_RATE_LIMIT` | | `10` | Max requests/min for anonymous callers (per IP) |
+| `MCP_AUTH_RATE_LIMIT` | | `0` | Max requests/min for authenticated callers (0 = unlimited) |
 
 ### Tool Implementation
 
@@ -104,6 +112,7 @@ Tools are implemented as static classes with `[McpServerToolType]` and `[McpServ
 |------|-------|
 | `SearchNodesTool.cs` | `search_nodes` |
 | `SearchDocsTool.cs` | `search_docs` |
+| `SearchDocsRagTool.cs` | `search_docs_rag` (RAG Q&A via KB retrieve + GPT-4o) |
 | `TypeHierarchyTool.cs` | `get_type_hierarchy` |
 | `SpecSummaryTool.cs` | `get_spec_summary` |
 | `CountNodesTool.cs` | `count_nodes` |
@@ -112,6 +121,13 @@ Tools are implemented as static classes with `[McpServerToolType]` and `[McpServ
 | `CompareVersionsTool.cs` | `compare_versions` |
 | `ComplianceTool.cs` | `check_compliance` |
 | `SuggestModelTool.cs` | `suggest_model` |
+
+### Services
+
+| Class | Purpose |
+|-------|---------|
+| `SearchService` | Shared Azure AI Search client for structured queries |
+| `KbService` | KB retrieve API + GPT-4o chat completion for RAG. Supports MI + API key auth. |
 
 ## Search Index Schema
 
