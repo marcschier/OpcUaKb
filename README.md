@@ -1,5 +1,9 @@
 # OPC UA Knowledge Base MCP Server
 
+<p align="center">
+  <img src="docs/images/hero-banner.svg" alt="OPC UA Knowledge Base" width="100%"/>
+</p>
+
 [![Build](https://github.com/marcschier/OpcUaKb/actions/workflows/ci.yml/badge.svg)](https://github.com/marcschier/OpcUaKb/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![.NET 10](https://img.shields.io/badge/.NET-10.0-purple)](https://dotnet.microsoft.com/download/dotnet/10.0)
@@ -10,23 +14,9 @@ An Azure AI Search agentic retrieval pipeline that exposes the complete OPC UA r
 
 ## Architecture
 
-```mermaid
-graph TD
-    OPC["*.opcfoundation.org"] --> Crawler["Web Crawler (C#)"]
-    CloudLib["UA-CloudLibrary<br/>(optional)"] --> Blob
-    Crawler --> Blob["Azure Blob Storage"]
-    Blob --> Chunker["HTML Chunker + Embeddings"]
-    Blob --> NodeSet["NodeSet XML Parser<br/>+ Type Hierarchy"]
-    Chunker --> Index["Search Index<br/>(vectors + text + structured fields)"]
-    NodeSet --> |"nodes + hierarchy + summaries"| Index
-    Web["Web Knowledge Source"] --> KB["Knowledge Base<br/>(Azure AI Foundry + GPT-4o)"]
-    Index --> KB
-    KB --> MCP1["KB MCP Endpoint<br/>(RAG synthesis)"]
-    Index --> McpServer["Custom MCP Server<br/>(10 tools)"]
-    MCP1 --> Clients["Copilot CLI / Claude Desktop<br/>/ AI Agents"]
-    McpServer --> Clients
-    MCP1 --> Chat["OpcUaKb.Chat"]
-```
+<p align="center">
+  <img src="docs/images/architecture.svg" alt="Architecture" width="100%"/>
+</p>
 
 ### Key Features
 
@@ -67,25 +57,75 @@ graph TD
 
 The custom MCP server (`OpcUaKb.McpServer`) exposes 10 tools alongside the Azure AI Search KB endpoint:
 
-### Search & Discovery
+### 🔍 Search & Discovery
 
-| Tool | Description |
-|------|-------------|
-| `search_nodes` | Structured search with OData filters by node class, spec, parent type, modelling rule, and `source`. Version-aware with two-pass fallback. |
-| `get_type_hierarchy` | ObjectType inheritance chain with declared/inherited member counts and supertype chain |
-| `get_spec_summary` | Pre-computed per-spec or cross-spec NodeSet statistics (node counts, top ObjectTypes). Filterable by `source`. |
-| `search_docs` | Full-text search across HTML specification pages, tables, and diagrams. Version-aware. |
-| `count_nodes` | Faceted aggregation by node_class, spec_part, modelling_rule, data_type, or `source`. |
-| `list_specs` | Ranked catalog of indexed specs (opcfoundation + CloudLib) with version, node count, publication date, namespace URI, popularity, and description. When listing CloudLib, cross-queries opcfoundation to annotate each entry with version comparison (same/differs/unique). Use `source="cloudlib"` + `unique_to_source=true` to find CloudLib NodeSets not in the official index OR with different versions. |
+<table>
+<tr>
+<td width="50%" valign="top">
 
-### Compliance & Modelling
+**`search_nodes`** — Structured search with OData filters by node class, spec, parent type, modelling rule, and `source`. Version-aware with two-pass fallback.
 
-| Tool | Description |
-|------|-------------|
-| `validate_nodeset` | Validate NodeSet XML against OPC UA standard and OPC 11030 best practices — checks naming conventions, modelling rules, type hierarchy, reference types |
-| `compare_versions` | Compare two versions of a companion spec, classify changes as backward-compatible or breaking per OPC 11030 §3 |
-| `check_compliance` | Check a NodeSet implementation against a companion spec — finds missing mandatory/optional nodes, data type mismatches |
-| `suggest_model` | Suggest OPC UA information model design based on a domain description, recommending base types from DI/Machinery/IA and OPC 11030 best practices |
+</td>
+<td width="50%" valign="top">
+
+**`search_docs`** — Full-text search across HTML specification pages, tables, and diagrams. Version-aware.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+**`get_type_hierarchy`** — ObjectType inheritance chain with declared/inherited member counts and supertype chain.
+
+</td>
+<td valign="top">
+
+**`get_spec_summary`** — Pre-computed per-spec or cross-spec NodeSet statistics (node counts, top ObjectTypes). Filterable by `source`.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+**`count_nodes`** — Faceted aggregation by node_class, spec_part, modelling_rule, data_type, or `source`.
+
+</td>
+<td valign="top">
+
+**`list_specs`** — Ranked catalog with version, node count, popularity, and cross-source version comparison. Use `unique_to_source=true` to find CloudLib NodeSets not in the official index or with different versions.
+
+</td>
+</tr>
+</table>
+
+### 🏗️ Compliance & Modelling
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+**`validate_nodeset`** — Validate NodeSet XML against OPC UA standard and OPC 11030 best practices — checks naming conventions, modelling rules, type hierarchy, reference types.
+
+</td>
+<td width="50%" valign="top">
+
+**`compare_versions`** — Compare two versions of a companion spec, classify changes as backward-compatible or breaking per OPC 11030 §3.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+**`check_compliance`** — Check a NodeSet implementation against a companion spec — finds missing mandatory/optional nodes, data type mismatches.
+
+</td>
+<td valign="top">
+
+**`suggest_model`** — Suggest OPC UA information model design based on a domain description, recommending base types from DI/Machinery/IA and OPC 11030 best practices.
+
+</td>
+</tr>
+</table>
 
 ### Version Filtering
 
