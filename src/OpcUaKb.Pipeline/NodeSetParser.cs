@@ -255,17 +255,20 @@ sealed class OpcUaNodeSetParser
             }
 
             var specId = $"summary-{spec.ToLowerInvariant().Replace(' ', '-')}";
-            // Pick a representative namespace URI from the first doc of this spec
-            var nsUri = nodesetDocs.FirstOrDefault(d =>
+            // Pick a representative doc from this spec for namespace URI and version
+            var representative = nodesetDocs.FirstOrDefault(d =>
                 d.TryGetValue("spec_part", out var p) && p?.ToString() == spec
-                && d.TryGetValue("namespace_uri", out _))?["namespace_uri"]?.ToString() ?? "";
+                && d.TryGetValue("namespace_uri", out _));
+            var nsUri = representative?["namespace_uri"]?.ToString() ?? "";
+            var specVer = representative != null
+                && representative.TryGetValue("spec_version", out var sv) ? sv?.ToString() ?? "" : "";
             summaries.Add(new SearchDocument(new Dictionary<string, object>
             {
                 ["id"] = MakeId("summary", spec, specId),
                 ["page_chunk"] = sb.ToString(),
                 ["source_url"] = $"https://reference.opcfoundation.org/{spec}/",
                 ["spec_part"] = spec,
-                ["spec_version"] = "",
+                ["spec_version"] = specVer,
                 ["section_title"] = $"NodeSet Summary: {spec}",
                 ["content_type"] = "nodeset_summary",
                 ["chunk_index"] = 0,
