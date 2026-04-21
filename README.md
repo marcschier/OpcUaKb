@@ -1,6 +1,6 @@
 # OPC UA Knowledge Base MCP Server
 
-<img src="docs/images/logo.svg" alt="OPC UA Knowledge Base" width="80" align="left" style="margin-right: 16px"/>
+<img src="docs/images/logo.svg" alt="OPC UA Knowledge Base" width="160" align="left" style="margin-right: 16px"/>
 
 [![Build](https://github.com/marcschier/OpcUaKb/actions/workflows/ci.yml/badge.svg)](https://github.com/marcschier/OpcUaKb/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -167,6 +167,10 @@ dotnet run --project src/OpcUaKb.Chat
 ## ⚙️ Pipeline
 
 Weekly crawl + index pipeline (Sunday 2am UTC, Container Apps Job, 24h timeout):
+
+<p align="center">
+  <img src="docs/images/pipeline-flow.svg" alt="Pipeline Flow" width="100%"/>
+</p>
 
 | Phase | Description |
 |-------|-------------|

@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 140" width="760" height="140">
+  <defs>
+    <filter id="shadow" x="-5%" y="-5%" width="110%" height="115%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.08"/>
+    </filter>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="760" height="140" fill="#f8fafc" rx="10" stroke="#e2e8f0" stroke-width="1"/>
+
+  <!-- Step 1: Crawl -->
+  <g transform="translate(40, 18)">
+    <circle cx="32" cy="32" r="30" fill="#dbeafe" stroke="#93c5fd" stroke-width="1.5" filter="url(#shadow)"/>
+    <text x="32" y="40" font-family="Segoe UI, sans-serif" font-size="26" text-anchor="middle">🕸️</text>
+    <text x="32" y="82" font-family="Segoe UI, sans-serif" font-size="14" fill="#1e40af" font-weight="700" text-anchor="middle">Crawl</text>
+    <text x="32" y="98" font-family="Segoe UI, sans-serif" font-size="10" fill="#64748b" text-anchor="middle">BFS spider across</text>
+    <text x="32" y="110" font-family="Segoe UI, sans-serif" font-size="10" fill="#64748b" text-anchor="middle">*.opcfoundation.org</text>
+  </g>
+
+  <!-- Arrow 1→2 -->
+  <path d="M 112 50 L 170 50" stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arr)"/>
+
+  <!-- Step 2: Parse -->
+  <g transform="translate(180, 18)">
+    <circle cx="32" cy="32" r="30" fill="#d1fae5" stroke="#6ee7b7" stroke-width="1.5" filter="url(#shadow)"/>
+    <text x="32" y="40" font-family="Segoe UI, sans-serif" font-size="26" text-anchor="middle">⚙️</text>
+    <text x="32" y="82" font-family="Segoe UI, sans-serif" font-size="14" fill="#065f46" font-weight="700" text-anchor="middle">Parse</text>
+    <text x="32" y="98" font-family="Segoe UI, sans-serif" font-size="10" fill="#64748b" text-anchor="middle">HTML chunks +</text>
+    <text x="32" y="110" font-family="Segoe UI, sans-serif" font-size="10" fill="#64748b" text-anchor="middle">NodeSet XMLs</text>
+  </g>
+
+  <!-- Arrow 2→3 -->
+  <path d="M 252 50 L 310 50" stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arr)"/>
+
+  <!-- Step 3: Embed -->
+  <g transform="translate(320, 18)">
+    <circle cx="32" cy="32" r="30" fill="#e0e7ff" stroke="#a5b4fc" stroke-width="1.5" filter="url(#shadow)"/>
+    <text x="32" y="40" font-family="Segoe UI, sans-serif" font-size="26" text-anchor="middle">🧬</text>
+    <text x="32" y="82" font-family="Segoe UI, sans-serif" font-size="14" fill="#3730a3" font-weight="700" text-anchor="middle">Embed</text>
+    <text x="32" y="98" font-family="Segoe UI, sans-serif" font-size="10" fill="#64748b" text-anchor="middle">Vector embeddings</text>
+    <text x="32" y="110" font-family="Segoe UI, sans-serif" font-size="10" fill="#64748b" text-anchor="middle">via AI Foundry (MI)</text>
+  </g>
+
+  <!-- Arrow 3→4 -->
+  <path d="M 392 50 L 450 50" stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arr)"/>
+
+  <!-- Step 4: Index -->
+  <g transform="translate(460, 18)">
+    <circle cx="32" cy="32" r="30" fill="#ede9fe" stroke="#a78bfa" stroke-width="1.5" filter="url(#shadow)"/>
+    <text x="32" y="40" font-family="Segoe UI, sans-serif" font-size="26" text-anchor="middle">🔍</text>
+    <text x="32" y="82" font-family="Segoe UI, sans-serif" font-size="14" fill="#5b21b6" font-weight="700" text-anchor="middle">Index</text>
+    <text x="32" y="98" font-family="Segoe UI, sans-serif" font-size="10" fill="#64748b" text-anchor="middle">Azure AI Search</text>
+    <text x="32" y="110" font-family="Segoe UI, sans-serif" font-size="10" fill="#64748b" text-anchor="middle">180K+ documents</text>
+  </g>
+
+  <!-- Arrow 4→5 -->
+  <path d="M 532 50 L 590 50" stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arr)"/>
+
+  <!-- Step 5: Serve -->
+  <g transform="translate(600, 18)">
+    <circle cx="32" cy="32" r="30" fill="#fef3c7" stroke="#fbbf24" stroke-width="1.5" filter="url(#shadow)"/>
+    <text x="32" y="40" font-family="Segoe UI, sans-serif" font-size="26" text-anchor="middle">🤖</text>
+    <text x="32" y="82" font-family="Segoe UI, sans-serif" font-size="14" fill="#92400e" font-weight="700" text-anchor="middle">Serve</text>
+    <text x="32" y="98" font-family="Segoe UI, sans-serif" font-size="10" fill="#64748b" text-anchor="middle">MCP endpoints</text>
+    <text x="32" y="110" font-family="Segoe UI, sans-serif" font-size="10" fill="#64748b" text-anchor="middle">for AI agents</text>
+  </g>
+</svg>

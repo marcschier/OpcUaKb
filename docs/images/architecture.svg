@@ -1,10 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 520" width="900" height="520">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 620" width="720" height="620">
   <defs>
-    <linearGradient id="bg2" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#f8fafc"/>
-      <stop offset="100%" style="stop-color:#f1f5f9"/>
-    </linearGradient>
-    <!-- Phase colors -->
     <linearGradient id="crawl" x1="0%" y1="0%" x2="0%" y2="100%">
       <stop offset="0%" style="stop-color:#dbeafe"/><stop offset="100%" style="stop-color:#bfdbfe"/>
     </linearGradient>
@@ -20,192 +15,133 @@
     <filter id="shadow" x="-5%" y="-5%" width="110%" height="115%">
       <feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.08"/>
     </filter>
-  </defs>
-
-  <!-- Background -->
-  <rect width="900" height="520" fill="url(#bg2)" rx="12"/>
-
-  <!-- Phase Labels -->
-  <text x="130" y="30" font-family="Segoe UI, sans-serif" font-size="11" fill="#64748b" font-weight="600" text-anchor="middle" letter-spacing="2">SOURCES</text>
-  <text x="370" y="30" font-family="Segoe UI, sans-serif" font-size="11" fill="#64748b" font-weight="600" text-anchor="middle" letter-spacing="2">PIPELINE</text>
-  <text x="610" y="30" font-family="Segoe UI, sans-serif" font-size="11" fill="#64748b" font-weight="600" text-anchor="middle" letter-spacing="2">INTELLIGENCE</text>
-  <text x="810" y="30" font-family="Segoe UI, sans-serif" font-size="11" fill="#64748b" font-weight="600" text-anchor="middle" letter-spacing="2">CLIENTS</text>
-
-  <!-- Phase separator lines -->
-  <line x1="245" y1="40" x2="245" y2="500" stroke="#e2e8f0" stroke-width="1" stroke-dasharray="4,4"/>
-  <line x1="490" y1="40" x2="490" y2="500" stroke="#e2e8f0" stroke-width="1" stroke-dasharray="4,4"/>
-  <line x1="720" y1="40" x2="720" y2="500" stroke="#e2e8f0" stroke-width="1" stroke-dasharray="4,4"/>
-
-  <!-- ═══ SOURCES ═══ -->
-  <!-- OPC Foundation -->
-  <g filter="url(#shadow)">
-    <rect x="30" y="60" width="200" height="64" rx="10" fill="url(#crawl)" stroke="#93c5fd" stroke-width="1.5"/>
-    <text x="60" y="88" font-family="Segoe UI, sans-serif" font-size="13" fill="#1e40af" font-weight="600">🌐 OPC Foundation</text>
-    <text x="60" y="108" font-family="Segoe UI, sans-serif" font-size="11" fill="#3b82f6">*.opcfoundation.org</text>
-  </g>
-
-  <!-- UA CloudLibrary -->
-  <g filter="url(#shadow)">
-    <rect x="30" y="145" width="200" height="64" rx="10" fill="url(#crawl)" stroke="#93c5fd" stroke-width="1.5"/>
-    <text x="60" y="173" font-family="Segoe UI, sans-serif" font-size="13" fill="#1e40af" font-weight="600">☁️ UA-CloudLibrary</text>
-    <text x="60" y="193" font-family="Segoe UI, sans-serif" font-size="11" fill="#3b82f6">REST API + NodeSets</text>
-  </g>
-
-  <!-- ═══ PIPELINE ═══ -->
-  <!-- Blob Storage -->
-  <g filter="url(#shadow)">
-    <rect x="280" y="60" width="180" height="56" rx="10" fill="url(#index)" stroke="#6ee7b7" stroke-width="1.5"/>
-    <text x="310" y="84" font-family="Segoe UI, sans-serif" font-size="13" fill="#065f46" font-weight="600">📦 Blob Storage</text>
-    <text x="310" y="102" font-family="Segoe UI, sans-serif" font-size="11" fill="#059669">HTML + NodeSet XMLs</text>
-  </g>
-
-  <!-- HTML Chunker -->
-  <g filter="url(#shadow)">
-    <rect x="280" y="140" width="180" height="56" rx="10" fill="url(#index)" stroke="#6ee7b7" stroke-width="1.5"/>
-    <text x="310" y="164" font-family="Segoe UI, sans-serif" font-size="13" fill="#065f46" font-weight="600">✂️ HTML Chunker</text>
-    <text x="310" y="182" font-family="Segoe UI, sans-serif" font-size="11" fill="#059669">+ Embeddings (MI auth)</text>
-  </g>
-
-  <!-- NodeSet Parser -->
-  <g filter="url(#shadow)">
-    <rect x="280" y="220" width="180" height="72" rx="10" fill="url(#index)" stroke="#6ee7b7" stroke-width="1.5"/>
-    <text x="310" y="248" font-family="Segoe UI, sans-serif" font-size="13" fill="#065f46" font-weight="600">🔧 NodeSet Parser</text>
-    <text x="310" y="266" font-family="Segoe UI, sans-serif" font-size="11" fill="#059669">Type hierarchy resolution</text>
-    <text x="310" y="280" font-family="Segoe UI, sans-serif" font-size="11" fill="#059669">Summaries + hierarchies</text>
-  </g>
-
-  <!-- ═══ INTELLIGENCE ═══ -->
-  <!-- Search Index -->
-  <g filter="url(#shadow)">
-    <rect x="510" y="60" width="195" height="72" rx="10" fill="url(#search)" stroke="#a78bfa" stroke-width="1.5"/>
-    <text x="540" y="88" font-family="Segoe UI, sans-serif" font-size="13" fill="#5b21b6" font-weight="600">🔍 Search Index</text>
-    <text x="540" y="106" font-family="Segoe UI, sans-serif" font-size="11" fill="#7c3aed">Vectors + text + structured</text>
-    <text x="540" y="120" font-family="Segoe UI, sans-serif" font-size="11" fill="#7c3aed">180K+ documents</text>
-  </g>
-
-  <!-- Knowledge Base -->
-  <g filter="url(#shadow)">
-    <rect x="510" y="155" width="195" height="72" rx="10" fill="url(#search)" stroke="#a78bfa" stroke-width="1.5"/>
-    <text x="540" y="183" font-family="Segoe UI, sans-serif" font-size="13" fill="#5b21b6" font-weight="600">🧠 Knowledge Base</text>
-    <text x="540" y="201" font-family="Segoe UI, sans-serif" font-size="11" fill="#7c3aed">Azure AI Foundry + GPT-4o</text>
-    <text x="540" y="215" font-family="Segoe UI, sans-serif" font-size="11" fill="#7c3aed">RAG synthesis</text>
-  </g>
-
-  <!-- Custom MCP Server -->
-  <g filter="url(#shadow)">
-    <rect x="510" y="250" width="195" height="72" rx="10" fill="url(#search)" stroke="#a78bfa" stroke-width="1.5"/>
-    <text x="540" y="278" font-family="Segoe UI, sans-serif" font-size="13" fill="#5b21b6" font-weight="600">⚙️ MCP Server</text>
-    <text x="540" y="296" font-family="Segoe UI, sans-serif" font-size="11" fill="#7c3aed">10 tools (search, validate,</text>
-    <text x="540" y="310" font-family="Segoe UI, sans-serif" font-size="11" fill="#7c3aed">compliance, modelling)</text>
-  </g>
-
-  <!-- ═══ CLIENTS ═══ -->
-  <g filter="url(#shadow)">
-    <rect x="735" y="100" width="145" height="56" rx="10" fill="url(#serve)" stroke="#fbbf24" stroke-width="1.5"/>
-    <text x="755" y="124" font-family="Segoe UI, sans-serif" font-size="13" fill="#92400e" font-weight="600">🤖 Copilot CLI</text>
-    <text x="755" y="142" font-family="Segoe UI, sans-serif" font-size="11" fill="#b45309">GitHub Copilot</text>
-  </g>
-  <g filter="url(#shadow)">
-    <rect x="735" y="175" width="145" height="56" rx="10" fill="url(#serve)" stroke="#fbbf24" stroke-width="1.5"/>
-    <text x="755" y="199" font-family="Segoe UI, sans-serif" font-size="13" fill="#92400e" font-weight="600">💬 Claude Desktop</text>
-    <text x="755" y="217" font-family="Segoe UI, sans-serif" font-size="11" fill="#b45309">Anthropic</text>
-  </g>
-  <g filter="url(#shadow)">
-    <rect x="735" y="250" width="145" height="56" rx="10" fill="url(#serve)" stroke="#fbbf24" stroke-width="1.5"/>
-    <text x="755" y="274" font-family="Segoe UI, sans-serif" font-size="13" fill="#92400e" font-weight="600">🔌 AI Agents</text>
-    <text x="755" y="292" font-family="Segoe UI, sans-serif" font-size="11" fill="#b45309">Any MCP client</text>
-  </g>
-
-  <!-- ═══ ARROWS ═══ -->
-  <defs>
-    <marker id="arrowBlue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-auto">
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-auto">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#3b82f6"/>
     </marker>
-    <marker id="arrowGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-auto">
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-auto">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#059669"/>
     </marker>
-    <marker id="arrowPurple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-auto">
+    <marker id="arrowPurple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-auto">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#7c3aed"/>
     </marker>
-    <marker id="arrowAmber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-auto">
+    <marker id="arrowAmber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-auto">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#b45309"/>
     </marker>
   </defs>
 
-  <!-- Source → Blob -->
-  <path d="M 230 92 L 275 88" stroke="#3b82f6" stroke-width="2" fill="none" marker-end="url(#arrowBlue)"/>
-  <path d="M 230 177 L 275 88" stroke="#3b82f6" stroke-width="2" fill="none" marker-end="url(#arrowBlue)" stroke-dasharray="5,3"/>
+  <!-- Background -->
+  <rect width="720" height="620" fill="#f8fafc" rx="12"/>
 
-  <!-- Blob → Chunker / Parser -->
-  <path d="M 370 116 L 370 135" stroke="#059669" stroke-width="2" fill="none" marker-end="url(#arrowGreen)"/>
-  <path d="M 370 116 L 370 215" stroke="#059669" stroke-width="2" fill="none" marker-end="url(#arrowGreen)"/>
+  <!-- ═══ ROW 1: SOURCES ═══ -->
+  <text x="360" y="28" font-family="Segoe UI, sans-serif" font-size="11" fill="#64748b" font-weight="600" text-anchor="middle" letter-spacing="2">SOURCES</text>
 
-  <!-- Chunker → Index -->
-  <path d="M 460 168 L 505 96" stroke="#7c3aed" stroke-width="2" fill="none" marker-end="url(#arrowPurple)"/>
-  <!-- Parser → Index -->
-  <path d="M 460 256 L 505 96" stroke="#7c3aed" stroke-width="2" fill="none" marker-end="url(#arrowPurple)"/>
-
-  <!-- Index → KB -->
-  <path d="M 608 132 L 608 150" stroke="#7c3aed" stroke-width="2" fill="none" marker-end="url(#arrowPurple)"/>
-  <!-- Index → MCP Server -->
-  <path d="M 608 132 L 608 245" stroke="#7c3aed" stroke-width="2" fill="none" marker-end="url(#arrowPurple)"/>
-
-  <!-- KB → Clients -->
-  <path d="M 705 191 L 730 176" stroke="#b45309" stroke-width="2" fill="none" marker-end="url(#arrowAmber)"/>
-  <!-- MCP → Clients -->
-  <path d="M 705 286 L 730 278" stroke="#b45309" stroke-width="2" fill="none" marker-end="url(#arrowAmber)"/>
-
-  <!-- ═══ BOTTOM: How It Works Strip ═══ -->
-  <rect x="30" y="370" width="840" height="130" rx="10" fill="#fff" stroke="#e2e8f0" stroke-width="1.5" filter="url(#shadow)"/>
-  <text x="450" y="395" font-family="Segoe UI, sans-serif" font-size="12" fill="#64748b" font-weight="600" text-anchor="middle" letter-spacing="2">HOW IT WORKS</text>
-
-  <!-- Step 1: Crawl -->
-  <g transform="translate(75, 415)">
-    <circle cx="30" cy="30" r="28" fill="#dbeafe" stroke="#93c5fd" stroke-width="1.5"/>
-    <text x="30" y="38" font-family="Segoe UI, sans-serif" font-size="24" text-anchor="middle">🕸️</text>
-    <text x="30" y="75" font-family="Segoe UI, sans-serif" font-size="13" fill="#1e40af" font-weight="700" text-anchor="middle">Crawl</text>
-  </g>
-  <!-- Arrow 1→2 -->
-  <path d="M 145 445 L 210 445" stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arrowBlue)"/>
-
-  <!-- Step 2: Parse -->
-  <g transform="translate(225, 415)">
-    <circle cx="30" cy="30" r="28" fill="#d1fae5" stroke="#6ee7b7" stroke-width="1.5"/>
-    <text x="30" y="38" font-family="Segoe UI, sans-serif" font-size="24" text-anchor="middle">⚙️</text>
-    <text x="30" y="75" font-family="Segoe UI, sans-serif" font-size="13" fill="#065f46" font-weight="700" text-anchor="middle">Parse</text>
-  </g>
-  <!-- Arrow 2→3 -->
-  <path d="M 295 445 L 360 445" stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arrowGreen)"/>
-
-  <!-- Step 3: Embed -->
-  <g transform="translate(375, 415)">
-    <circle cx="30" cy="30" r="28" fill="#e0e7ff" stroke="#a5b4fc" stroke-width="1.5"/>
-    <text x="30" y="38" font-family="Segoe UI, sans-serif" font-size="24" text-anchor="middle">🧬</text>
-    <text x="30" y="75" font-family="Segoe UI, sans-serif" font-size="13" fill="#3730a3" font-weight="700" text-anchor="middle">Embed</text>
-  </g>
-  <!-- Arrow 3→4 -->
-  <path d="M 445 445 L 510 445" stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arrowPurple)"/>
-
-  <!-- Step 4: Index -->
-  <g transform="translate(525, 415)">
-    <circle cx="30" cy="30" r="28" fill="#ede9fe" stroke="#a78bfa" stroke-width="1.5"/>
-    <text x="30" y="38" font-family="Segoe UI, sans-serif" font-size="24" text-anchor="middle">🔍</text>
-    <text x="30" y="75" font-family="Segoe UI, sans-serif" font-size="13" fill="#5b21b6" font-weight="700" text-anchor="middle">Index</text>
-  </g>
-  <!-- Arrow 4→5 -->
-  <path d="M 595 445 L 660 445" stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arrowAmber)"/>
-
-  <!-- Step 5: Serve -->
-  <g transform="translate(675, 415)">
-    <circle cx="30" cy="30" r="28" fill="#fef3c7" stroke="#fbbf24" stroke-width="1.5"/>
-    <text x="30" y="38" font-family="Segoe UI, sans-serif" font-size="24" text-anchor="middle">🤖</text>
-    <text x="30" y="75" font-family="Segoe UI, sans-serif" font-size="13" fill="#92400e" font-weight="700" text-anchor="middle">Serve</text>
+  <g filter="url(#shadow)">
+    <rect x="80" y="42" width="240" height="60" rx="10" fill="url(#crawl)" stroke="#93c5fd" stroke-width="1.5"/>
+    <text x="115" y="68" font-family="Segoe UI, sans-serif" font-size="14" fill="#1e40af" font-weight="600">🌐 OPC Foundation</text>
+    <text x="115" y="88" font-family="Segoe UI, sans-serif" font-size="11" fill="#3b82f6">*.opcfoundation.org</text>
   </g>
 
-  <!-- Step descriptions -->
-  <text x="105" y="505" font-family="Segoe UI, sans-serif" font-size="9.5" fill="#94a3b8" text-anchor="middle">BFS spider</text>
-  <text x="255" y="505" font-family="Segoe UI, sans-serif" font-size="9.5" fill="#94a3b8" text-anchor="middle">HTML + NodeSets</text>
-  <text x="405" y="505" font-family="Segoe UI, sans-serif" font-size="9.5" fill="#94a3b8" text-anchor="middle">Vector embeddings</text>
-  <text x="555" y="505" font-family="Segoe UI, sans-serif" font-size="9.5" fill="#94a3b8" text-anchor="middle">Azure AI Search</text>
-  <text x="705" y="505" font-family="Segoe UI, sans-serif" font-size="9.5" fill="#94a3b8" text-anchor="middle">MCP endpoints</text>
+  <g filter="url(#shadow)">
+    <rect x="400" y="42" width="240" height="60" rx="10" fill="url(#crawl)" stroke="#93c5fd" stroke-width="1.5"/>
+    <text x="435" y="68" font-family="Segoe UI, sans-serif" font-size="14" fill="#1e40af" font-weight="600">☁️ UA-CloudLibrary</text>
+    <text x="435" y="88" font-family="Segoe UI, sans-serif" font-size="11" fill="#3b82f6">REST API · 450+ NodeSets</text>
+  </g>
+
+  <!-- Arrows: Sources → Pipeline -->
+  <path d="M 200 102 L 200 135" stroke="#3b82f6" stroke-width="2" fill="none" marker-end="url(#arrowBlue)"/>
+  <path d="M 520 102 L 520 135" stroke="#3b82f6" stroke-width="2" fill="none" marker-end="url(#arrowBlue)" stroke-dasharray="5,3"/>
+
+  <!-- ═══ ROW 2: PIPELINE ═══ -->
+  <text x="360" y="150" font-family="Segoe UI, sans-serif" font-size="11" fill="#64748b" font-weight="600" text-anchor="middle" letter-spacing="2">PIPELINE</text>
+
+  <g filter="url(#shadow)">
+    <rect x="40" y="164" width="200" height="56" rx="10" fill="url(#index)" stroke="#6ee7b7" stroke-width="1.5"/>
+    <text x="72" y="189" font-family="Segoe UI, sans-serif" font-size="13" fill="#065f46" font-weight="600">📦 Blob Storage</text>
+    <text x="72" y="207" font-family="Segoe UI, sans-serif" font-size="11" fill="#059669">HTML + NodeSet XMLs</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="260" y="164" width="200" height="56" rx="10" fill="url(#index)" stroke="#6ee7b7" stroke-width="1.5"/>
+    <text x="292" y="189" font-family="Segoe UI, sans-serif" font-size="13" fill="#065f46" font-weight="600">✂️ HTML Chunker</text>
+    <text x="292" y="207" font-family="Segoe UI, sans-serif" font-size="11" fill="#059669">+ Embeddings (MI auth)</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="480" y="164" width="200" height="56" rx="10" fill="url(#index)" stroke="#6ee7b7" stroke-width="1.5"/>
+    <text x="512" y="189" font-family="Segoe UI, sans-serif" font-size="13" fill="#065f46" font-weight="600">🔧 NodeSet Parser</text>
+    <text x="512" y="207" font-family="Segoe UI, sans-serif" font-size="11" fill="#059669">Type hierarchy + summaries</text>
+  </g>
+
+  <!-- Arrows: Pipeline → Intelligence -->
+  <path d="M 140 220 L 140 262" stroke="#059669" stroke-width="2" fill="none" marker-end="url(#arrowGreen)"/>
+  <path d="M 360 220 L 360 262" stroke="#059669" stroke-width="2" fill="none" marker-end="url(#arrowGreen)"/>
+  <path d="M 580 220 L 580 262" stroke="#059669" stroke-width="2" fill="none" marker-end="url(#arrowGreen)"/>
+
+  <!-- ═══ ROW 3: INTELLIGENCE ═══ -->
+  <text x="360" y="276" font-family="Segoe UI, sans-serif" font-size="11" fill="#64748b" font-weight="600" text-anchor="middle" letter-spacing="2">INTELLIGENCE</text>
+
+  <g filter="url(#shadow)">
+    <rect x="40" y="290" width="200" height="72" rx="10" fill="url(#search)" stroke="#a78bfa" stroke-width="1.5"/>
+    <text x="72" y="318" font-family="Segoe UI, sans-serif" font-size="14" fill="#5b21b6" font-weight="600">🔍 Search Index</text>
+    <text x="72" y="338" font-family="Segoe UI, sans-serif" font-size="11" fill="#7c3aed">Vectors + text + structured</text>
+    <text x="72" y="352" font-family="Segoe UI, sans-serif" font-size="11" fill="#7c3aed">180K+ documents</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="260" y="290" width="200" height="72" rx="10" fill="url(#search)" stroke="#a78bfa" stroke-width="1.5"/>
+    <text x="292" y="318" font-family="Segoe UI, sans-serif" font-size="14" fill="#5b21b6" font-weight="600">🧠 Knowledge Base</text>
+    <text x="292" y="338" font-family="Segoe UI, sans-serif" font-size="11" fill="#7c3aed">Azure AI Foundry + GPT-4o</text>
+    <text x="292" y="352" font-family="Segoe UI, sans-serif" font-size="11" fill="#7c3aed">RAG synthesis</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="480" y="290" width="200" height="72" rx="10" fill="url(#search)" stroke="#a78bfa" stroke-width="1.5"/>
+    <text x="512" y="318" font-family="Segoe UI, sans-serif" font-size="14" fill="#5b21b6" font-weight="600">⚙️ MCP Server</text>
+    <text x="512" y="338" font-family="Segoe UI, sans-serif" font-size="11" fill="#7c3aed">10 tools · search, validate,</text>
+    <text x="512" y="352" font-family="Segoe UI, sans-serif" font-size="11" fill="#7c3aed">compliance, modelling</text>
+  </g>
+
+  <!-- Arrows: Intelligence → MCP Endpoints -->
+  <path d="M 360 362 L 360 402" stroke="#7c3aed" stroke-width="2" fill="none" marker-end="url(#arrowPurple)"/>
+  <path d="M 580 362 L 580 402" stroke="#7c3aed" stroke-width="2" fill="none" marker-end="url(#arrowPurple)"/>
+
+  <!-- ═══ ROW 4: MCP ENDPOINTS ═══ -->
+  <text x="360" y="416" font-family="Segoe UI, sans-serif" font-size="11" fill="#64748b" font-weight="600" text-anchor="middle" letter-spacing="2">MCP ENDPOINTS</text>
+
+  <g filter="url(#shadow)">
+    <rect x="150" y="430" width="200" height="56" rx="10" fill="url(#search)" stroke="#a78bfa" stroke-width="1.5"/>
+    <text x="182" y="455" font-family="Segoe UI, sans-serif" font-size="13" fill="#5b21b6" font-weight="600">📡 KB RAG Endpoint</text>
+    <text x="182" y="473" font-family="Segoe UI, sans-serif" font-size="11" fill="#7c3aed">Answer synthesis</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="370" y="430" width="200" height="56" rx="10" fill="url(#search)" stroke="#a78bfa" stroke-width="1.5"/>
+    <text x="402" y="455" font-family="Segoe UI, sans-serif" font-size="13" fill="#5b21b6" font-weight="600">🔌 Tools Endpoint</text>
+    <text x="402" y="473" font-family="Segoe UI, sans-serif" font-size="11" fill="#7c3aed">10 structured tools</text>
+  </g>
+
+  <!-- Arrows: Endpoints → Clients -->
+  <path d="M 250 486 L 250 524" stroke="#b45309" stroke-width="2" fill="none" marker-end="url(#arrowAmber)"/>
+  <path d="M 470 486 L 470 524" stroke="#b45309" stroke-width="2" fill="none" marker-end="url(#arrowAmber)"/>
+
+  <!-- ═══ ROW 5: CLIENTS ═══ -->
+  <text x="360" y="538" font-family="Segoe UI, sans-serif" font-size="11" fill="#64748b" font-weight="600" text-anchor="middle" letter-spacing="2">CLIENTS</text>
+
+  <g filter="url(#shadow)">
+    <rect x="80" y="552" width="170" height="50" rx="10" fill="url(#serve)" stroke="#fbbf24" stroke-width="1.5"/>
+    <text x="108" y="575" font-family="Segoe UI, sans-serif" font-size="13" fill="#92400e" font-weight="600">🤖 Copilot CLI</text>
+    <text x="108" y="592" font-family="Segoe UI, sans-serif" font-size="11" fill="#b45309">GitHub Copilot</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="275" y="552" width="170" height="50" rx="10" fill="url(#serve)" stroke="#fbbf24" stroke-width="1.5"/>
+    <text x="303" y="575" font-family="Segoe UI, sans-serif" font-size="13" fill="#92400e" font-weight="600">💬 Claude Desktop</text>
+    <text x="303" y="592" font-family="Segoe UI, sans-serif" font-size="11" fill="#b45309">Anthropic</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="470" y="552" width="170" height="50" rx="10" fill="url(#serve)" stroke="#fbbf24" stroke-width="1.5"/>
+    <text x="498" y="575" font-family="Segoe UI, sans-serif" font-size="13" fill="#92400e" font-weight="600">🔌 AI Agents</text>
+    <text x="498" y="592" font-family="Segoe UI, sans-serif" font-size="11" fill="#b45309">Any MCP client</text>
+  </g>
 </svg>
