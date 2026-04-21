@@ -107,7 +107,27 @@ sealed class VersionCatalog
                 // Everything before the version segment is the spec identity
                 if (i == 0)
                 {
-                    specPart = "Unknown";
+                    // Version is first segment (e.g., "v104/Core/docs/Part9/...")
+                    // Look ahead for a "Part*" or spec name segment after "Core/docs/"
+                    for (int j = i + 1; j < segments.Length; j++)
+                    {
+                        if (segments[j].StartsWith("Part", StringComparison.OrdinalIgnoreCase))
+                        {
+                            specPart = segments[j];
+                            break;
+                        }
+                        // Stop at known non-spec segments
+                        if (segments[j].Equals("docs", StringComparison.OrdinalIgnoreCase) ||
+                            segments[j].Equals("Core", StringComparison.OrdinalIgnoreCase))
+                            continue;
+                        // First meaningful segment after Core/docs that isn't a "Part" —
+                        // could be a companion spec name like "DI", "Pumps"
+                        if (!segments[j].Contains('.') && segments[j].Length > 1)
+                        {
+                            specPart = segments[j];
+                            break;
+                        }
+                    }
                 }
                 else if (i == 1)
                 {
@@ -131,7 +151,9 @@ sealed class VersionCatalog
         if (specPart == "Unknown" && segments.Length > 0)
         {
             var first = segments[0];
-            if (!first.Contains('_') && !first.Contains('.') && first.Length > 1)
+            // Don't use version-like segments as spec names
+            if (!first.Contains('_') && !first.Contains('.') && first.Length > 1
+                && !Regex.IsMatch(first, @"^v\d+\w*$", RegexOptions.IgnoreCase))
                 specPart = first;
         }
 
