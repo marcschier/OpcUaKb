@@ -14,14 +14,21 @@ An Azure AI Search agentic retrieval pipeline that exposes the complete OPC UA r
 
 ## ✨ Key Features
 
-- 🌐 **180K+ indexed documents** from `*.opcfoundation.org` — spec text, tables, diagrams, NodeSet XMLs
-- 🔧 **10 MCP tools** — structured search, compliance validation, version comparison, model design suggestions
-- 🧬 **Type hierarchy resolution** — cross-file ObjectType inheritance with declared vs inherited member counting
-- 📊 **Version-aware indexing** — `is_latest` / `version_rank` tags, automatic fallback to older versions
-- ☁️ **UA-CloudLibrary integration** — 450+ NodeSets with popularity ranking and cross-source version comparison
-- 🧠 **RAG knowledge base** — Azure AI Foundry + GPT-4o for query planning and answer synthesis
-- 🔒 **Managed Identity auth** — keyless AOAI access throughout the pipeline and MCP server
-- 📈 **Popularity-boosted ranking** — widely-adopted specs surface first via logarithmic download-count scoring
+🌐 **Comprehensive OPC UA coverage** — Over 180,000 indexed documents spanning the entire OPC Foundation reference library: specification text, tables, diagrams, and NodeSet XML definitions. Instead of manually searching across dozens of spec PDFs and web pages, your AI agent can query the full corpus in seconds.
+
+🔧 **10 purpose-built MCP tools** — Structured search, compliance validation, version comparison, and information model design suggestions — all accessible via the Model Context Protocol. AI agents can find specific ObjectTypes, check a NodeSet against a companion spec, or get help designing a new information model without leaving their workflow.
+
+🧬 **Type hierarchy resolution** — Cross-file ObjectType inheritance is fully resolved with alias and namespace normalization. Every ObjectType includes its complete supertype chain, declared member counts, and inherited member totals. This is the kind of deep structural insight that's tedious to extract manually from XML files.
+
+📊 **Version-aware indexing** — Every document is tagged with `is_latest` and `version_rank`, so queries default to the current spec version but can target any historical version. When a spec is updated, you can compare versions side-by-side to identify breaking changes per OPC 11030 §3.
+
+☁️ **UA-CloudLibrary integration** — Downloads and indexes 450+ NodeSets from the [OPC Foundation Cloud Library](https://uacloudlibrary.opcfoundation.org), complete with download counts, publication dates, and version metadata. A single `list_specs` call shows which CloudLib entries overlap with official companion specs and where versions differ.
+
+🧠 **RAG knowledge base** — Azure AI Foundry with GPT-4o provides natural-language query planning and answer synthesis. Ask a question in plain English and get a grounded answer with references to specific specification sections — useful for both newcomers learning OPC UA and experts looking up details quickly.
+
+🔒 **Keyless authentication** — The entire stack uses Managed Identity for Azure OpenAI access. No API keys to rotate or leak — the pipeline, MCP server, and chat client all authenticate automatically via `DefaultAzureCredential`.
+
+📈 **Popularity-boosted ranking** — Search results are ranked using a scoring profile that combines text relevance with adoption signals. OPC Foundation specs receive baseline priority; CloudLibrary entries are boosted by their download count on a logarithmic scale, so widely-adopted NodeSets like DI, Machinery, and PackML naturally surface first.
 
 ## 🏗️ Architecture
 
