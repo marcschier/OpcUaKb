@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120">
+  <defs>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#3b82f6"/>
+      <stop offset="50%" style="stop-color:#8b5cf6"/>
+      <stop offset="100%" style="stop-color:#06b6d4"/>
+    </linearGradient>
+  </defs>
+  <!-- Gear -->
+  <g transform="translate(60, 60)">
+    <circle cx="0" cy="0" r="32" fill="none" stroke="url(#accent)" stroke-width="3.5"/>
+    <circle cx="0" cy="0" r="14" fill="none" stroke="url(#accent)" stroke-width="2.5"/>
+    <circle cx="0" cy="0" r="5" fill="url(#accent)" opacity="0.6"/>
+    <g stroke="url(#accent)" stroke-width="3.5">
+      <line x1="0" y1="-32" x2="0" y2="-42"/>
+      <line x1="28" y1="-16" x2="36" y2="-21"/>
+      <line x1="28" y1="16" x2="36" y2="21"/>
+      <line x1="0" y1="32" x2="0" y2="42"/>
+      <line x1="-28" y1="16" x2="-36" y2="21"/>
+      <line x1="-28" y1="-16" x2="-36" y2="-21"/>
+    </g>
+  </g>
+  <!-- Knowledge graph nodes -->
+  <g opacity="0.55">
+    <circle cx="90" cy="25" r="5" fill="#3b82f6"/>
+    <circle cx="105" cy="50" r="4" fill="#8b5cf6"/>
+    <circle cx="92" cy="72" r="4" fill="#06b6d4"/>
+    <line x1="90" y1="25" x2="105" y2="50" stroke="#8b5cf6" stroke-width="1.5"/>
+    <line x1="105" y1="50" x2="92" y2="72" stroke="#06b6d4" stroke-width="1.5"/>
+    <line x1="90" y1="25" x2="78" y2="35" stroke="#3b82f6" stroke-width="1.5"/>
+  </g>
+</svg>
