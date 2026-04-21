@@ -25,9 +25,23 @@ An Azure AI Search agentic retrieval pipeline that exposes the complete OPC UA r
 
 ## 🏗️ Architecture
 
-<p align="center">
-  <img src="docs/images/architecture.svg" alt="Architecture" width="100%"/>
-</p>
+```mermaid
+graph TD
+    OPC["*.opcfoundation.org"] --> Crawler["Web Crawler (C#)"]
+    CloudLib["UA-CloudLibrary<br/>(optional)"] --> Blob
+    Crawler --> Blob["Azure Blob Storage"]
+    Blob --> Chunker["HTML Chunker + Embeddings"]
+    Blob --> NodeSet["NodeSet XML Parser<br/>+ Type Hierarchy"]
+    Chunker --> Index["Search Index<br/>(vectors + text + structured fields)"]
+    NodeSet --> |"nodes + hierarchy + summaries"| Index
+    Web["Web Knowledge Source"] --> KB["Knowledge Base<br/>(Azure AI Foundry + GPT-4o)"]
+    Index --> KB
+    KB --> MCP1["KB MCP Endpoint<br/>(RAG synthesis)"]
+    Index --> McpServer["Custom MCP Server<br/>(10 tools)"]
+    MCP1 --> Clients["Copilot CLI / Claude Desktop<br/>/ AI Agents"]
+    McpServer --> Clients
+    MCP1 --> Chat["OpcUaKb.Chat"]
+```
 
 ## 🔌 MCP Tools
 
@@ -167,10 +181,6 @@ dotnet run --project src/OpcUaKb.Chat
 ## ⚙️ Pipeline
 
 Weekly crawl + index pipeline (Sunday 2am UTC, Container Apps Job, 24h timeout):
-
-<p align="center">
-  <img src="docs/images/pipeline-flow.svg" alt="Pipeline Flow" width="100%"/>
-</p>
 
 | Phase | Description |
 |-------|-------------|
