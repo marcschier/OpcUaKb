@@ -16,7 +16,7 @@ An Azure AI Search agentic retrieval pipeline that exposes the complete OPC UA r
 
 🌐 **Comprehensive OPC UA coverage** — Over 180,000 indexed documents spanning the entire OPC Foundation reference library: specification text, tables, diagrams, and NodeSet XML definitions. Instead of manually searching across dozens of spec PDFs and web pages, your AI agent can query the full corpus in seconds.
 
-🔧 **10 purpose-built MCP tools** — Structured search, compliance validation, version comparison, and information model design suggestions — all accessible via the Model Context Protocol. AI agents can find specific ObjectTypes, check a NodeSet against a companion spec, or get help designing a new information model without leaving their workflow.
+🔧 **11 purpose-built MCP tools** — RAG Q&A, structured search, compliance validation, version comparison, and information model design suggestions — all accessible via a single MCP endpoint. AI agents can ask natural language questions, find specific ObjectTypes, check a NodeSet against a companion spec, or get help designing a new information model without leaving their workflow.
 
 🧬 **Type hierarchy resolution** — Cross-file ObjectType inheritance is fully resolved with alias and namespace normalization. Every ObjectType includes its complete supertype chain, declared member counts, and inherited member totals. This is the kind of deep structural insight that's tedious to extract manually from XML files.
 
@@ -41,18 +41,15 @@ graph TD
     Blob --> NodeSet["NodeSet XML Parser<br/>+ Type Hierarchy"]
     Chunker --> Index["Search Index<br/>(vectors + text + structured fields)"]
     NodeSet --> |"nodes + hierarchy + summaries"| Index
-    Web["Web Knowledge Source"] --> KB["Knowledge Base<br/>(Azure AI Foundry + GPT-4o)"]
-    Index --> KB
-    KB --> MCP1["KB MCP Endpoint<br/>(RAG synthesis)"]
-    Index --> McpServer["Custom MCP Server<br/>(10 tools)"]
-    MCP1 --> Clients["Copilot CLI / Claude Desktop<br/>/ AI Agents"]
-    McpServer --> Clients
-    MCP1 --> Chat["OpcUaKb.Chat"]
+    Index --> McpServer["MCP Server<br/>(11 tools + RAG)"]
+    Index --> KB["Knowledge Base<br/>(Azure AI Foundry + GPT-4o)"]
+    KB --> McpServer
+    McpServer --> Clients["Copilot CLI / Claude Desktop<br/>/ AI Agents"]
 ```
 
 ## 🔌 MCP Tools
 
-The custom MCP server exposes 10 tools alongside the Azure AI Search KB endpoint:
+The MCP server exposes 11 tools — structured search, RAG Q&A, compliance validation, and modelling:
 
 ### 🔍 Search & Discovery
 
@@ -90,6 +87,13 @@ The custom MCP server exposes 10 tools alongside the Azure AI Search KB endpoint
 <td valign="top">
 
 **`list_specs`** — Ranked catalog with version, node count, popularity, and cross-source version comparison. Use `unique_to_source=true` to find CloudLib NodeSets not in the official index or with different versions.
+
+</td>
+</tr>
+<tr>
+<td valign="top" colspan="2">
+
+**`search_docs_rag`** — Ask a natural language question about OPC UA and get an AI-synthesized answer grounded by the knowledge base. Uses KB retrieval + GPT-4o. Best for conceptual questions, protocol details, and security models.
 
 </td>
 </tr>
@@ -157,15 +161,9 @@ dotnet tool install -g OpcUaKb.McpServer
 
 See [`scripts/README.md`](scripts/README.md) for manual configuration and all client setup options.
 
-## 🔗 MCP Endpoints
+## 🔗 MCP Endpoint
 
-### Azure AI Search KB (RAG with answer synthesis)
-
-```
-https://<prefix>-search.search.windows.net/knowledgebases/<prefix>-kb/mcp?api-version=2025-11-01-preview
-```
-
-### Custom MCP Server (10 structured tools)
+Single endpoint for all tools including RAG Q&A:
 
 ```
 https://<mcp-server-fqdn>/
@@ -181,7 +179,7 @@ https://<mcp-server-fqdn>/
 
 ```bash
 export SEARCH_API_KEY="$(az search admin-key show --service-name <prefix>-search -g <rg> --query primaryKey -o tsv)"
-az login  # Keyless AOAI auth via DefaultAzureCredential
+# AOAI auth: set AOAI_API_KEY for key auth, or `az login` for DefaultAzureCredential
 dotnet run --project src/OpcUaKb.Chat
 ```
 

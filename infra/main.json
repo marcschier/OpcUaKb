@@ -6,7 +6,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.36.1.42791",
-      "templateHash": "10427165057494523634"
+      "templateHash": "13829213195131568961"
     }
   },
   "parameters": {
@@ -294,6 +294,9 @@
       "apiVersion": "2024-03-01",
       "name": "[variables('mcpAppName')]",
       "location": "[parameters('location')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
       "properties": {
         "environmentId": "[resourceId('Microsoft.App/managedEnvironments', variables('envName'))]",
         "configuration": {
@@ -341,6 +344,10 @@
                   "secretRef": "search-api-key"
                 },
                 {
+                  "name": "AOAI_ENDPOINT",
+                  "value": "[reference('foundry').endpoint]"
+                },
+                {
                   "name": "MCP_API_KEY",
                   "secretRef": "search-api-key"
                 },
@@ -374,6 +381,7 @@
       "dependsOn": [
         "acr",
         "containerEnv",
+        "foundry",
         "search"
       ]
     },
@@ -405,6 +413,21 @@
       "dependsOn": [
         "foundry",
         "pipelineJob"
+      ]
+    },
+    "mcpServerFoundryRoleAssignment": {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[format('Microsoft.CognitiveServices/accounts/{0}', variables('foundryName'))]",
+      "name": "[guid(resourceId('Microsoft.App/containerApps', variables('mcpAppName')), resourceId('Microsoft.CognitiveServices/accounts', variables('foundryName')), variables('cognitiveServicesOpenAIUserRole'))]",
+      "properties": {
+        "principalId": "[reference('mcpServer', '2024-03-01', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal",
+        "roleDefinitionId": "[variables('cognitiveServicesOpenAIUserRole')]"
+      },
+      "dependsOn": [
+        "foundry",
+        "mcpServer"
       ]
     },
     "workbook": {

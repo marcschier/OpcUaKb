@@ -13,6 +13,9 @@ using ModelContextProtocol.Server;
 //
 // Required env vars: SEARCH_ENDPOINT, SEARCH_API_KEY
 // Optional: SEARCH_INDEX_NAME (default: opcua-content-index)
+//           AOAI_ENDPOINT — enables search_docs_rag tool (KB retrieve + GPT-4o)
+//           AOAI_API_KEY  — AOAI key auth (falls back to Managed Identity)
+//           KB_NAME       — knowledge base name (default: opcua-kb)
 //
 // Rate limiting env vars:
 //   MCP_API_KEY           — API key for authenticated access
@@ -30,6 +33,7 @@ if (useStdio)
     builder.Logging.ClearProviders();
     builder.Logging.AddConsole(o => o.LogToStandardErrorThreshold = LogLevel.Trace);
     builder.Services.AddSingleton<SearchService>();
+    builder.Services.AddSingleton<KbService>();
     builder.Services
         .AddMcpServer(o => o.ServerInfo = new() { Name = "opcua-kb", Version = "1.0.0" })
         .WithStdioServerTransport()
@@ -41,6 +45,7 @@ else
     // HTTP/SSE transport for hosted deployment
     var builder = WebApplication.CreateBuilder(args);
     builder.Services.AddSingleton<SearchService>();
+    builder.Services.AddSingleton<KbService>();
     builder.Services
         .AddMcpServer(o => o.ServerInfo = new() { Name = "opcua-kb", Version = "1.0.0" })
         .WithHttpTransport(o => o.Stateless = true)

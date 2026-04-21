@@ -288,6 +288,9 @@ var mcpImage = empty(pipelineImage) ? 'mcr.microsoft.com/dotnet/aspnet:10.0' : '
 resource mcpServer 'Microsoft.App/containerApps@2024-03-01' = {
   name: mcpAppName
   location: location
+  identity: {
+    type: 'SystemAssigned'
+  }
   properties: {
     environmentId: containerEnv.id
     configuration: {
@@ -333,6 +336,10 @@ resource mcpServer 'Microsoft.App/containerApps@2024-03-01' = {
             {
               name: 'SEARCH_API_KEY'
               secretRef: 'search-api-key'
+            }
+            {
+              name: 'AOAI_ENDPOINT'
+              value: foundry.properties.endpoint
             }
             {
               name: 'MCP_API_KEY'
@@ -389,6 +396,16 @@ resource pipelineJobFoundryRoleAssignment 'Microsoft.Authorization/roleAssignmen
   scope: foundry
   properties: {
     principalId: pipelineJob.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: cognitiveServicesOpenAIUserRole
+  }
+}
+
+resource mcpServerFoundryRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(mcpServer.id, foundry.id, cognitiveServicesOpenAIUserRole)
+  scope: foundry
+  properties: {
+    principalId: mcpServer.identity.principalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: cognitiveServicesOpenAIUserRole
   }

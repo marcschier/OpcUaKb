@@ -7,11 +7,13 @@ using Azure.Identity;
 
 // ═══════════════════════════════════════════════════════════════════════
 // OPC UA Knowledge Base Chatbot
-// Interactive console chat grounded by the OPC UA KB MCP endpoint.
+// Interactive console chat grounded by the OPC UA KB retrieve endpoint.
 // ═══════════════════════════════════════════════════════════════════════
 
-const string SearchEndpoint    = "https://opcua-kb-search.search.windows.net";
-const string AoaiEndpoint      = "https://opcua-kb-foundry.openai.azure.com";
+var searchEndpoint = Environment.GetEnvironmentVariable("SEARCH_ENDPOINT")
+    ?? "https://opcua-kb-search.search.windows.net";
+var aoaiEndpoint = Environment.GetEnvironmentVariable("AOAI_ENDPOINT")
+    ?? "https://opcua-kb-foundry.openai.azure.com";
 const string KnowledgeBaseName = "opcua-kb";
 const string GptDeployment     = "gpt-4o";
 const string ApiVersion        = "2025-11-01-preview";
@@ -19,12 +21,17 @@ const string AoaiApiVersion    = "2024-10-21";
 
 var searchApiKey = Environment.GetEnvironmentVariable("SEARCH_API_KEY")
     ?? throw new InvalidOperationException("Set SEARCH_API_KEY environment variable");
-TokenCredential aoaiCredential = new DefaultAzureCredential();
+
+// AOAI auth: API key if set, otherwise DefaultAzureCredential (MI or az login)
+var aoaiApiKey = Environment.GetEnvironmentVariable("AOAI_API_KEY");
+TokenCredential? aoaiCredential = string.IsNullOrEmpty(aoaiApiKey) ? new DefaultAzureCredential() : null;
 
 using var searchHttp = new HttpClient();
 searchHttp.DefaultRequestHeaders.Add("api-key", searchApiKey);
 
 using var aoaiHttp = new HttpClient();
+if (!string.IsNullOrEmpty(aoaiApiKey))
+    aoaiHttp.DefaultRequestHeaders.Add("api-key", aoaiApiKey);
 
 var conversationHistory = new List<ChatMessage>();
 var systemPrompt = """
@@ -124,7 +131,7 @@ async Task<string?> RetrieveGroundingAsync(string query)
     };
 
     var response = await searchHttp.PostAsync(
-        $"{SearchEndpoint}/knowledgebases/{KnowledgeBaseName}/retrieve?api-version={ApiVersion}",
+        $"{searchEndpoint}/knowledgebases/{KnowledgeBaseName}/retrieve?api-version={ApiVersion}",
         new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json"));
 
     if (!response.IsSuccessStatusCode) return null;
@@ -170,15 +177,21 @@ async Task<string> ChatCompletionAsync(string userQuery, string? groundingData)
         max_tokens = 2000
     };
 
-    var token = await aoaiCredential.GetTokenAsync(
-        new TokenRequestContext(new[] { "https://cognitiveservices.azure.com/.default" }),
-        default);
     var req = new HttpRequestMessage(HttpMethod.Post,
-        $"{AoaiEndpoint}/openai/deployments/{GptDeployment}/chat/completions?api-version={AoaiApiVersion}")
+        $"{aoaiEndpoint}/openai/deployments/{GptDeployment}/chat/completions?api-version={AoaiApiVersion}")
     {
         Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json")
     };
-    req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);
+
+    // Bearer token auth when using MI/DefaultAzureCredential (api-key already set as default header)
+    if (aoaiCredential != null)
+    {
+        var token = await aoaiCredential.GetTokenAsync(
+            new TokenRequestContext(["https://cognitiveservices.azure.com/.default"]),
+            default);
+        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);
+    }
+
     var response = await aoaiHttp.SendAsync(req);
 
     response.EnsureSuccessStatusCode();

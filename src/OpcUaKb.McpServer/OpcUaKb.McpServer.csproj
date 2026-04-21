@@ -9,7 +9,7 @@
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>opcua-kb-mcp</ToolCommandName>
     <PackageId>OpcUaKb.McpServer</PackageId>
-    <Description>OPC UA Knowledge Base MCP Server — 9 tools for searching specs, validating NodeSets, checking compliance, and modelling assistance. Connects to Azure AI Search index of all OPC UA specifications and companion specs.</Description>
+    <Description>OPC UA Knowledge Base MCP Server — 11 tools for searching specs, RAG Q&amp;A, validating NodeSets, checking compliance, and modelling assistance. Connects to Azure AI Search index of all OPC UA specifications and companion specs.</Description>
     <Authors>Marc Schier</Authors>
     <PackageProjectUrl>https://github.com/marcschier/OpcUaKb</PackageProjectUrl>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
@@ -19,6 +19,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Azure.Identity" Version="1.14.2" />
     <PackageReference Include="Azure.Search.Documents" Version="11.8.0-beta.1" />
     <PackageReference Include="ModelContextProtocol.AspNetCore" Version="1.2.0" />
   </ItemGroup>
