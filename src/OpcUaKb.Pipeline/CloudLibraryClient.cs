@@ -86,7 +86,8 @@ sealed class CloudLibraryClient
 
         while (true)
         {
-            var url = $"/infomodel/find?keywords=*&offset={offset}&limit={PageSize}";
+            // Use find2 endpoint (cursor-based pagination, returns all entries)
+            var url = $"/infomodel/find2?keywords=*&offset={offset}&limit={PageSize}";
             var response = await RetryRequestAsync(url);
             if (response == null) break;
 
@@ -125,7 +126,7 @@ sealed class CloudLibraryClient
                 allModels.Count, offset);
 
             if (results.Count < PageSize) break;
-            offset += PageSize;
+            offset += results.Count; // cursor-based: advance by actual count
         }
 
         _log.LogInformation("[CLOUDLIB] Total models found: {Count}", allModels.Count);
