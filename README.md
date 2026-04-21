@@ -4,9 +4,9 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![.NET 10](https://img.shields.io/badge/.NET-10.0-purple)](https://dotnet.microsoft.com/download/dotnet/10.0)
 [![MCP](https://img.shields.io/badge/MCP-1.2-green)](https://modelcontextprotocol.io)
-[![Version](https://img.shields.io/badge/version-2.2-orange)](version.json)
+[![Version](https://img.shields.io/badge/version-3.0-orange)](version.json)
 
-An Azure AI Search agentic retrieval pipeline that exposes the complete OPC UA reference specifications as MCP (Model Context Protocol) endpoints for AI agents. Crawls and indexes all content from `*.opcfoundation.org` including specification text, tables, diagrams, and NodeSet XML files — with full type hierarchy resolution, version-aware indexing, compliance validation tools, and optional [UA-CloudLibrary](https://uacloudlibrary.opcfoundation.org) integration.
+An Azure AI Search agentic retrieval pipeline that exposes the complete OPC UA reference specifications as MCP (Model Context Protocol) endpoints for AI agents. Crawls and indexes all content from `*.opcfoundation.org` including specification text, tables, diagrams, and NodeSet XML files — with full type hierarchy resolution, version-aware indexing, compliance validation tools, and optional [UA-CloudLibrary](https://uacloudlibrary.opcfoundation.org) integration. Uses Azure AI Foundry with Managed Identity for keyless authentication.
 
 ## Architecture
 
@@ -19,7 +19,7 @@ graph TD
     Blob --> NodeSet["NodeSet XML Parser<br/>+ Type Hierarchy"]
     Chunker --> Index["Search Index<br/>(vectors + text + structured fields)"]
     NodeSet --> |"nodes + hierarchy + summaries"| Index
-    Web["Web Knowledge Source"] --> KB["Knowledge Base<br/>(Azure AI Search + GPT-4o)"]
+    Web["Web Knowledge Source"] --> KB["Knowledge Base<br/>(Azure AI Foundry + GPT-4o)"]
     Index --> KB
     KB --> MCP1["KB MCP Endpoint<br/>(RAG synthesis)"]
     Index --> McpServer["Custom MCP Server<br/>(10 tools)"]
@@ -39,7 +39,7 @@ graph TD
 - **UA-CloudLibrary Integration** *(optional)* — Downloads NodeSet XMLs and REST metadata (version, publication date, title/description, download count) from the [OPC Foundation Cloud Library](https://uacloudlibrary.opcfoundation.org). Indexed separately as `cloudlib_nodeset` content type with `source`, `namespace_uri`, `publication_date`, `popularity`, and `in_opcfoundation_index` tags for efficient diff queries.
 - **Popularity-Boosted Ranking** — Every search uses a default `popularity_boost` scoring profile. OPC Foundation specs receive max boost; CloudLibrary entries are boosted by `numberOfDownloads` (logarithmic scale), surfacing widely-adopted nodesets first.
 - **Compliance Tools** — Validate NodeSet XMLs against OPC 11030 best practices, check implementations against companion specs, compare spec versions for breaking changes, suggest information model designs
-- **Knowledge Base** — Azure AI Search agentic retrieval with GPT-4o for query planning (medium reasoning effort) and answer synthesis
+- **Knowledge Base** — Azure AI Search agentic retrieval with Azure AI Foundry + GPT-4o for query planning (medium reasoning effort) and answer synthesis. Uses Managed Identity for keyless AOAI access.
 - **Custom MCP Server** — 9 tools with API key auth, hosted on Azure Container Apps with scale-to-zero. Supports HTTP/SSE (hosted) and stdio (local) transports.
 - **Git Versioning** — Nerdbank.GitVersioning for deterministic SemVer; container images tagged with version + SHA
 - **Monitoring** — Azure Monitor Workbook dashboard with crawl progress, index progress, errors, and execution history
@@ -76,7 +76,7 @@ The custom MCP server (`OpcUaKb.McpServer`) exposes 10 tools alongside the Azure
 | `get_spec_summary` | Pre-computed per-spec or cross-spec NodeSet statistics (node counts, top ObjectTypes). Filterable by `source`. |
 | `search_docs` | Full-text search across HTML specification pages, tables, and diagrams. Version-aware. |
 | `count_nodes` | Faceted aggregation by node_class, spec_part, modelling_rule, data_type, or `source`. |
-| `list_specs` | Catalog of indexed specs (opcfoundation + CloudLib) with version, publication date, namespace URI, popularity, and description. Use `source="cloudlib"` + `unique_to_source=true` to answer "which CloudLib NodeSets aren't already in the official companion spec index?" in one call. |
+| `list_specs` | Ranked catalog of indexed specs (opcfoundation + CloudLib) with version, node count, publication date, namespace URI, popularity, and description. When listing CloudLib, cross-queries opcfoundation to annotate each entry with version comparison (same/differs/unique). Use `source="cloudlib"` + `unique_to_source=true` to find CloudLib NodeSets not in the official index OR with different versions. |
 
 ### Compliance & Modelling
 
@@ -129,7 +129,8 @@ All search tools default to the **latest spec version** with automatic fallback 
 | `nodeset_summary` | Per-spec + master aggregation docs |
 | `nodeset_hierarchy` | Per-ObjectType docs with supertype chain and member counts |
 | `cloudlib_nodeset` | NodeSet nodes from UA-CloudLibrary (optional) |
-| `cloudlib_summary` | CloudLibrary aggregation docs (optional) |
+| `cloudlib_summary` | CloudLibrary per-spec aggregation docs (optional) |
+| `cloudlib_hierarchy` | CloudLibrary per-ObjectType hierarchy docs (optional) |
 
 ## Deploy
 
@@ -160,10 +161,10 @@ All resources are defined in `infra/main.bicep`:
 | Resource | Derived Name | Purpose |
 |----------|-------------|---------|
 | AI Search (Standard) | `{prefix}-search` | Search index + knowledge base + MCP endpoint |
-| Azure OpenAI | `{prefix}-openai` | GPT-4o (30 TPM) + text-embedding-3-large (120 TPM) |
+| Azure AI Foundry | `{prefix}-foundry` | AIServices account with default project; GPT-4o (30 TPM) + text-embedding-3-large (120 TPM). Managed Identity auth. |
 | Blob Storage | `{prefix}storage` | Crawled content storage |
 | Container Registry | `{prefix}registry` | Pipeline + MCP server Docker images |
-| Container Apps Job | `{prefix}-pipeline-job` | Weekly crawl + index (cron: `0 2 * * 0`, 24h timeout) |
+| Container Apps Job | `{prefix}-pipeline-job` | Weekly crawl + index (cron: `0 2 * * 0`, 24h timeout). Uses Managed Identity for AOAI access. |
 | Container App | `{prefix}-mcp-server` | Hosted MCP server (scale 0–2, HTTP auto-scale) |
 
 ## Quick Install
@@ -285,7 +286,7 @@ Add to `claude_desktop_config.json`:
 export SEARCH_API_KEY="$(az search admin-key show --service-name <prefix>-search -g <rg> --query primaryKey -o tsv)"
 # Auth to AOAI is keyless via DefaultAzureCredential — `az login` first and
 # ensure your user has the `Cognitive Services OpenAI User` role on the
-# Foundry account (`<prefix>-foundry`).
+# Azure AI Foundry account (`<prefix>-foundry`).
 dotnet run --project src/OpcUaKb.Chat
 ```
 
@@ -312,7 +313,7 @@ export SEARCH_API_KEY="$(az search admin-key show --service-name <prefix>-search
 export AOAI_ENDPOINT="https://<prefix>-foundry.openai.azure.com"
 # Auth to AOAI is keyless via DefaultAzureCredential — `az login` first and
 # ensure your user has the `Cognitive Services OpenAI User` role on the
-# Foundry account (`<prefix>-foundry`).
+# Azure AI Foundry account (`<prefix>-foundry`).
 
 # Optional: UA-CloudLibrary integration
 export CLOUDLIB_USERNAME="your-email@example.com"
