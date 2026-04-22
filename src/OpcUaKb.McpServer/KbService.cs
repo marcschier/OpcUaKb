@@ -85,33 +85,48 @@ sealed class KbService
     /// <summary>
     /// Retrieve grounding data from the KB, then generate a GPT-4o answer.
     /// </summary>
-    public async Task<string> AskAsync(string query)
+    public async Task<string> AskAsync(string query, string? context = null)
     {
         if (!_available)
             return "RAG not available — set AOAI_ENDPOINT environment variable to enable.";
 
         // Step 1: Retrieve grounding from KB
-        var grounding = await RetrieveGroundingAsync(query);
+        var grounding = await RetrieveGroundingAsync(query, context);
 
         // Step 2: Generate answer with GPT-4o
-        return await ChatCompletionAsync(query, grounding);
+        return await ChatCompletionAsync(query, grounding, context);
     }
 
-    async Task<string?> RetrieveGroundingAsync(string query)
+    async Task<string?> RetrieveGroundingAsync(string query, string? context)
     {
-        var messages = new List<object>
+        var messages = new List<object>();
+
+        // Add conversation context if provided
+        if (!string.IsNullOrWhiteSpace(context))
         {
-            new
+            var lines = context.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            for (int i = 0; i < lines.Length; i++)
+            {
+                var role = i % 2 == 0 ? "user" : "assistant";
+                messages.Add(new
+                {
+                    role,
+                    content = new[] { new { type = "text", text = lines[i].Trim() } }
+                });
+            }
+        }
+
+        messages.Add(new
             {
                 role = "user",
                 content = new[] { new { type = "text", text = query } }
             }
-        };
+        );
 
         var body = new
         {
             messages,
-            retrievalReasoningEffort = new { kind = "low" }
+            retrievalReasoningEffort = new { kind = "medium" }
         };
 
         var response = await _searchHttp.PostAsync(
@@ -124,7 +139,7 @@ sealed class KbService
         return json?["response"]?[0]?["content"]?[0]?["text"]?.GetValue<string>();
     }
 
-    async Task<string> ChatCompletionAsync(string query, string? grounding)
+    async Task<string> ChatCompletionAsync(string query, string? grounding, string? context)
     {
         var messages = new List<object>
         {
@@ -139,6 +154,17 @@ sealed class KbService
                 content = $"Use the following OPC UA specification data to answer the user's question. " +
                           $"Cite [ref_id:N] references where applicable.\n\n{grounding}"
             });
+        }
+
+        // Add conversation context for follow-up questions
+        if (!string.IsNullOrWhiteSpace(context))
+        {
+            var lines = context.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            for (int i = 0; i < lines.Length; i++)
+            {
+                var role = i % 2 == 0 ? "user" : "assistant";
+                messages.Add(new { role, content = lines[i].Trim() });
+            }
         }
 
         messages.Add(new { role = "user", content = query });

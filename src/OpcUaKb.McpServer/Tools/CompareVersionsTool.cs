@@ -17,29 +17,33 @@ static class CompareVersionsTool
         [Description("Newer version (e.g., v105)")] string new_version,
         [Description("Node class to compare (optional, e.g., ObjectType, Variable). Default: all.")] string? node_class = null)
     {
-        // Fetch nodes from old version
-        var oldFilters = new List<string>
+        // Fetch nodes from old version — try opcfoundation first, then cloudlib
+        string contentType = "nodeset";
+        var oldNodes = await FetchVersionNodes(search, spec, old_version, contentType, node_class);
+        var newNodes = await FetchVersionNodes(search, spec, new_version, contentType, node_class);
+
+        // Fallback to cloudlib if opcfoundation has no data
+        if (oldNodes.Count == 0 && newNodes.Count == 0)
         {
-            "content_type eq 'nodeset'",
-            $"spec_part eq '{spec}'",
-            $"spec_version eq '{old_version}'"
-        };
-        if (!string.IsNullOrWhiteSpace(node_class))
-            oldFilters.Add($"node_class eq '{node_class}'");
+            contentType = "cloudlib_nodeset";
+            oldNodes = await FetchVersionNodes(search, spec, old_version, contentType, node_class);
+            newNodes = await FetchVersionNodes(search, spec, new_version, contentType, node_class);
+        }
 
-        var newFilters = new List<string>
+        // If still no version-specific data, try version_rank for cloudlib
+        if (oldNodes.Count == 0 && newNodes.Count == 0)
         {
-            "content_type eq 'nodeset'",
-            $"spec_part eq '{spec}'",
-            $"spec_version eq '{new_version}'"
-        };
-        if (!string.IsNullOrWhiteSpace(node_class))
-            newFilters.Add($"node_class eq '{node_class}'");
-
-        var select = new[] { "browse_name", "node_class", "parent_type", "modelling_rule", "data_type" };
-
-        var oldNodes = await search.SearchAsync("*", string.Join(" and ", oldFilters), select, 1000);
-        var newNodes = await search.SearchAsync("*", string.Join(" and ", newFilters), select, 1000);
+            var prevFilter = $"content_type eq 'cloudlib_nodeset' and spec_part eq '{spec}' and version_rank eq 2";
+            var latestFilter = $"content_type eq 'cloudlib_nodeset' and spec_part eq '{spec}' and version_rank eq 1";
+            if (!string.IsNullOrWhiteSpace(node_class))
+            {
+                prevFilter += $" and node_class eq '{node_class}'";
+                latestFilter += $" and node_class eq '{node_class}'";
+            }
+            var select = new[] { "browse_name", "node_class", "parent_type", "modelling_rule", "data_type" };
+            oldNodes = await search.SearchAsync("*", prevFilter, select, 1000);
+            newNodes = await search.SearchAsync("*", latestFilter, select, 1000);
+        }
 
         if (oldNodes.Count == 0 && newNodes.Count == 0)
             return $"No nodes found for spec '{spec}' in either {old_version} or {new_version}.";
@@ -165,5 +169,20 @@ static class CompareVersionsTool
         var newVal = newDoc.GetString(field) ?? "";
         if (!oldVal.Equals(newVal, StringComparison.Ordinal))
             diffs.Add($"{label}: '{oldVal}' → '{newVal}'");
+    }
+
+    static async Task<List<SearchService.SearchResult>> FetchVersionNodes(
+        SearchService search, string spec, string version, string contentType, string? nodeClass)
+    {
+        var filters = new List<string>
+        {
+            $"content_type eq '{contentType}'",
+            $"spec_part eq '{spec}'",
+            $"spec_version eq '{version}'"
+        };
+        if (!string.IsNullOrWhiteSpace(nodeClass))
+            filters.Add($"node_class eq '{nodeClass}'");
+        var select = new[] { "browse_name", "node_class", "parent_type", "modelling_rule", "data_type" };
+        return await search.SearchAsync("*", string.Join(" and ", filters), select, 1000);
     }
 }

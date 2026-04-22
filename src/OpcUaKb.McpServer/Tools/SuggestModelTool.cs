@@ -16,17 +16,17 @@ static class SuggestModelTool
         [Description("Description of the domain, device, or system to model (e.g., 'a CNC milling machine with spindle speed, tool changer, and job management')")] string description,
         [Description("Specific aspect to focus on (optional, e.g., 'state machine', 'alarms', 'data types')")] string? focus = null)
     {
-        // Search for relevant existing companion specs and base types
+        // Search for relevant existing companion specs and base types (both sources)
         var specResults = await search.SearchAsync(
             description,
-            "content_type eq 'nodeset_summary'",
+            "(content_type eq 'nodeset_summary' or content_type eq 'cloudlib_summary')",
             ["section_title", "spec_part", "page_chunk"],
             5);
 
-        // Search for relevant ObjectTypes in existing specs
+        // Search for relevant ObjectTypes in existing specs (both sources)
         var typeResults = await search.SearchAsync(
             description,
-            "node_class eq 'ObjectType' and content_type eq 'nodeset'",
+            "node_class eq 'ObjectType' and (content_type eq 'nodeset' or content_type eq 'cloudlib_nodeset')",
             ["browse_name", "spec_part", "parent_type", "page_chunk"],
             10);
 

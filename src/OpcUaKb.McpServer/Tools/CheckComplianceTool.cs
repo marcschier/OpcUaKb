@@ -65,7 +65,7 @@ static class CheckComplianceTool
             });
         }
 
-        // Fetch spec definitions from the index
+        // Fetch spec definitions from the index — try opcfoundation, then cloudlib
         var filters = new List<string>
         {
             "content_type eq 'nodeset'",
@@ -76,6 +76,15 @@ static class CheckComplianceTool
 
         var select = new[] { "browse_name", "node_class", "parent_type", "modelling_rule", "data_type" };
         var specNodes = await search.SearchAsync("*", string.Join(" and ", filters), select, 1000);
+
+        // Fallback to cloudlib if opcfoundation has no data
+        if (specNodes.Count == 0)
+        {
+            filters[0] = "content_type eq 'cloudlib_nodeset'";
+            // For cloudlib, prefer latest version
+            filters.Add("is_latest eq true");
+            specNodes = await search.SearchAsync("*", string.Join(" and ", filters), select, 1000);
+        }
 
         if (specNodes.Count == 0)
             return $"No nodes found in spec '{spec}'" +

@@ -43,12 +43,22 @@ static class SearchNodesTool
         if (results.Count == 0)
             return "No nodes found matching the criteria.";
 
+        // Deduplicate: when same browse_name + node_class + parent_type exists in both sources, prefer opcfoundation
+        var deduped = results
+            .GroupBy(r =>
+            {
+                var d = r.Document;
+                return $"{d.GetString("browse_name")}|{d.GetString("node_class")}|{d.GetString("parent_type")}";
+            })
+            .Select(g => g.OrderBy(r => r.Document.GetString("source") == "opcfoundation" ? 0 : 1).First())
+            .ToList();
+
         var sb = new StringBuilder();
-        sb.AppendLine($"Found {results.Count} node(s):");
+        sb.AppendLine($"Found {deduped.Count} node(s):");
         VersionFilter.AppendVersionNote(sb, version_mode, spec_version, usedFallback);
         sb.AppendLine();
 
-        foreach (var r in results)
+        foreach (var r in deduped)
         {
             var d = r.Document;
             var name = d.GetString("browse_name");

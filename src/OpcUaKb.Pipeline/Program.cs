@@ -319,8 +319,15 @@ try
                 }
             }
 
-            log.LogInformation("[PIPELINE] Phase={Phase} Status={Status} Uploaded={U}",
-                "cloudlib", "completed", cloudUploaded);
+            log.LogInformation("[PIPELINE] Phase={Phase} Status={Status} Uploaded={U} Expected={E} Entries={N}",
+                "cloudlib", "completed", cloudUploaded, allCloudDocs.Count, cloudLibEntries.Count);
+            if (cloudUploaded < allCloudDocs.Count)
+                log.LogWarning("[CLOUDLIB] Upload shortfall: uploaded {Uploaded} of {Expected} docs",
+                    cloudUploaded, allCloudDocs.Count);
+        }
+        else
+        {
+            log.LogWarning("[CLOUDLIB] No entries returned from CloudLibrary API — check credentials or API availability");
         }
         await statusTracker.UpdateAsync("cloudlib", "completed");
     }

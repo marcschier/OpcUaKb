@@ -15,7 +15,7 @@ static class TypeHierarchyTool
         [Description("ObjectType browse name to look up (e.g., DesignType, ServerType, DeviceType)")] string type_name,
         [Description("Optional companion spec to narrow results (e.g., DI, Pumps)")] string? spec = null)
     {
-        var filters = new List<string> { "content_type eq 'nodeset_hierarchy'" };
+        var filters = new List<string> { "(content_type eq 'nodeset_hierarchy' or content_type eq 'cloudlib_hierarchy')" };
         if (!string.IsNullOrWhiteSpace(spec))
             filters.Add($"spec_part eq '{spec}'");
 
