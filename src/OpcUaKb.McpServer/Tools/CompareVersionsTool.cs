@@ -48,13 +48,13 @@ static class CompareVersionsTool
         if (oldNodes.Count == 0 && newNodes.Count == 0)
             return $"No nodes found for spec '{spec}' in either {old_version} or {new_version}.";
 
-        // Build lookup by browse_name + node_class + parent_type
-        var oldSet = oldNodes.ToDictionary(
-            n => MakeKey(n.Document),
-            n => n.Document);
-        var newSet = newNodes.ToDictionary(
-            n => MakeKey(n.Document),
-            n => n.Document);
+        // Build lookup by browse_name + node_class + parent_type (dedup on collisions)
+        var oldSet = oldNodes
+            .GroupBy(n => MakeKey(n.Document))
+            .ToDictionary(g => g.Key, g => g.First().Document);
+        var newSet = newNodes
+            .GroupBy(n => MakeKey(n.Document))
+            .ToDictionary(g => g.Key, g => g.First().Document);
 
         var added = new List<string>();
         var removed = new List<string>();
