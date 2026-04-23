@@ -112,17 +112,18 @@ sealed class OpcUaNodeSetParser
 
     public async Task<List<SearchDocument>> ParseAllAsync()
     {
-        // Phase 1: discover nodeset XML blobs — match any .xml file that could be a NodeSet
+        // Phase 1: discover opcfoundation nodeset XML blobs
+        // CloudLib blobs are handled separately by the CloudLib phase — exclude them here
         var blobNames = new List<string>();
         await foreach (var item in _container.GetBlobsAsync())
         {
             var name = item.Name;
-            // Include: api/nodesets/, cloudlib/, or any .xml that isn't clearly HTML/config
+            if (name.StartsWith("cloudlib/", StringComparison.OrdinalIgnoreCase)
+                || name.StartsWith("_pipeline", StringComparison.OrdinalIgnoreCase))
+                continue;
             if (name.StartsWith("api/nodesets/", StringComparison.OrdinalIgnoreCase)
-                || name.StartsWith("cloudlib/", StringComparison.OrdinalIgnoreCase)
                 || (name.EndsWith(".xml", StringComparison.OrdinalIgnoreCase)
-                    && !name.Contains("/docs/", StringComparison.OrdinalIgnoreCase)
-                    && !name.Contains("_pipeline-", StringComparison.OrdinalIgnoreCase)))
+                    && !name.Contains("/docs/", StringComparison.OrdinalIgnoreCase)))
             {
                 blobNames.Add(name);
             }
