@@ -106,8 +106,23 @@ else
 
     var app = builder.Build();
 
-    // Middleware order: rate limiting → auth → MCP
+    // Middleware order: rate limiting → OAuth endpoint handling → auth → MCP
     app.UseRateLimiter();
+
+    // Handle OAuth discovery and fallback endpoints explicitly.
+    // MCP clients MUST check /.well-known/oauth-authorization-server per RFC 8414.
+    // Returning 404 tells clients there is no authorization server — auth is not required.
+    // The fallback /authorize, /token, /register paths return 400 with a clear message
+    // instead of falling through to the MCP handler (which would return confusing errors).
+    app.Map("/authorize", () => Results.Json(
+        new { error = "unsupported_grant_type", error_description = "This server uses api-key header authentication. OAuth is not supported." },
+        statusCode: 400));
+    app.Map("/token", () => Results.Json(
+        new { error = "unsupported_grant_type", error_description = "This server uses api-key header authentication. OAuth is not supported." },
+        statusCode: 400));
+    app.Map("/register", () => Results.Json(
+        new { error = "invalid_client", error_description = "This server uses api-key header authentication. OAuth is not supported." },
+        statusCode: 400));
 
     // Auth middleware — block or allow anonymous based on config
     if (!string.IsNullOrEmpty(apiKey))
