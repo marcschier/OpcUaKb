@@ -351,7 +351,9 @@ resource mcpServer 'Microsoft.App/containerApps@2024-03-01' = {
             }
             {
               name: 'MCP_ANON_RATE_LIMIT'
-              value: '10'
+              // Higher limit to accommodate Microsoft 365 Copilot agent traffic
+              // (Copilot infra shares egress IPs across tenants)
+              value: '100'
             }
           ]
         }

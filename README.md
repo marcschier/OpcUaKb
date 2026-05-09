@@ -18,6 +18,8 @@ An Azure AI Search agentic retrieval pipeline that exposes the complete OPC UA r
 
 🔧 **11 purpose-built MCP tools** — RAG Q&A, structured search, compliance validation, version comparison, and information model design suggestions — all accessible via a single MCP endpoint. AI agents can ask natural language questions, find specific ObjectTypes, check a NodeSet against a companion spec, or get help designing a new information model without leaving their workflow.
 
+🏢 **Microsoft 365 Copilot agent** — Use the Knowledge Base directly from Microsoft 365 Copilot Chat, Teams, Word, PowerPoint, and Outlook. The declarative agent in [`agents/m365-copilot/`](agents/m365-copilot/) packages the MCP tools as a Microsoft 365 Copilot extension that any user in your tenant can install and use.
+
 🧬 **Type hierarchy resolution** — Cross-file ObjectType inheritance is fully resolved with alias and namespace normalization. Every ObjectType includes its complete supertype chain, declared member counts, and inherited member totals. This is the kind of deep structural insight that's tedious to extract manually from XML files.
 
 📊 **Version-aware indexing** — Every document is tagged with `is_latest` and `version_rank`, so queries default to the current spec version but can target any historical version. When a spec is updated, you can compare versions side-by-side to identify breaking changes per OPC 11030 §3.
@@ -172,8 +174,21 @@ https://<mcp-server-fqdn>/
 | Tier | Identification | Default Limit |
 |------|---------------|---------------|
 | Authenticated | Valid `api-key` header | Unlimited |
-| Anonymous | No key (per IP) | 10 req/min |
+| Anonymous | No key (per IP) | 100 req/min |
 | Blocked | `MCP_REQUIRE_AUTH=true` | 401 Unauthorized |
+
+## 🤖 Microsoft 365 Copilot Agent
+
+A declarative agent (`agents/m365-copilot/`) lets you use the OPC UA Knowledge Base inside **Microsoft 365 Copilot Chat**, **Teams**, **Word**, **PowerPoint**, and **Outlook**. The agent uses our deployed MCP server as its backend — no extra hosting needed.
+
+```bash
+# Open the agent project in VS Code with the Microsoft 365 Agents Toolkit extension
+cd agents/m365-copilot
+code .
+# Then click "Provision" in the Agents Toolkit Lifecycle pane
+```
+
+See [`agents/m365-copilot/README.md`](agents/m365-copilot/README.md) for prerequisites, sideloading, and publishing instructions.
 
 ## 💬 Interactive Chatbot
 
