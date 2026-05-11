@@ -479,6 +479,17 @@ sealed class OpcUaCrawler : IDisposable
         var queue = new ConcurrentQueue<(string url, bool isPage, bool followLinks)>();
         Enqueue(queue, BaseUrl, true, true);
 
+        // Process the main page synchronously up front so that ExtractLinks has
+        // populated the queue (and _queued) with per-spec version URLs before we
+        // probe older versions below.
+        if (queue.TryDequeue(out var seed))
+            await ProcessAsync(seed.url, seed.isPage, seed.followLinks, queue);
+
+        // The main page only links each spec's latest few versions, so older
+        // versions (e.g., DI v101) are unreachable via normal link-following.
+        // HEAD-probe them explicitly and enqueue any that exist.
+        await ProbeOlderVersionsAsync(queue);
+
         while (!queue.IsEmpty)
         {
             var batch = new List<(string url, bool isPage, bool followLinks)>();
@@ -496,6 +507,64 @@ sealed class OpcUaCrawler : IDisposable
             _downloaded, _skipped, _errors);
         await _tracker.UpdateAsync("crawl", "completed",
             downloaded: _downloaded, skipped: _skipped, errors: _errors, queued: 0);
+    }
+
+    // Per-spec version probing: derive (spec, latestVersion) tuples from URLs
+    // already discovered on the main page, then HEAD-probe v100..(latest-1) for
+    // each spec. Capped at 20 versions per spec to keep this bounded. Successful
+    // probes are enqueued for normal page-crawling so they get indexed.
+    async Task ProbeOlderVersionsAsync(ConcurrentQueue<(string, bool, bool)> queue)
+    {
+        var rx = new Regex(
+            @"https?://reference\.opcfoundation\.org/(?<spec>[^/]+(?:/[^/]+)?)/v(?<ver>\d{3,4})[a-z]?/",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        var bySpec = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var url in _queued.Keys)
+        {
+            var m = rx.Match(url);
+            if (!m.Success) continue;
+            var spec = m.Groups["spec"].Value;
+            if (int.TryParse(m.Groups["ver"].Value, out var v))
+            {
+                if (!bySpec.TryGetValue(spec, out var cur) || v > cur)
+                    bySpec[spec] = v;
+            }
+        }
+
+        _log.LogInformation("[CRAWL] Status=probe_older_start Specs={N}", bySpec.Count);
+        var discovered = 0;
+        var probeTasks = new List<Task>();
+        foreach (var (spec, latest) in bySpec)
+        {
+            // Cap at 20 attempts per spec, never probe below v100.
+            var floor = Math.Max(100, latest - 20);
+            for (var v = floor; v < latest; v++)
+            {
+                var probeUrl = $"https://reference.opcfoundation.org/{spec}/v{v:D3}/docs/";
+                probeTasks.Add(ProbeOneAsync(probeUrl, queue, () => Interlocked.Increment(ref discovered)));
+            }
+        }
+        await Task.WhenAll(probeTasks);
+        _log.LogInformation("[CRAWL] Status=probe_older_done Discovered={N}", discovered);
+    }
+
+    async Task ProbeOneAsync(string url, ConcurrentQueue<(string, bool, bool)> queue, Action onSuccess)
+    {
+        await _throttle.WaitAsync();
+        try
+        {
+            await Task.Delay(50);
+            using var head = new HttpRequestMessage(HttpMethod.Head, url);
+            using var resp = await _http.SendAsync(head);
+            if (resp.IsSuccessStatusCode)
+            {
+                _log.LogInformation("[CRAWL] Discovered older version: {Url}", url);
+                Enqueue(queue, url, true, true);
+                onSuccess();
+            }
+        }
+        catch { /* probe-only, ignore */ }
+        finally { _throttle.Release(); }
     }
 
     async Task ProcessAsync(string url, bool isPage, bool followLinks, ConcurrentQueue<(string, bool, bool)> queue)
@@ -618,7 +687,20 @@ sealed class OpcUaCrawler : IDisposable
         // Append .xml for API nodeset endpoints that serve XML
         if (contentType?.Contains("xml") == true && !path.EndsWith(".xml", StringComparison.OrdinalIgnoreCase))
             path += ".xml";
+        // Append .html for HTML responses whose URL has no file extension
+        // (e.g., /DI/v102/docs/1). Without this, the indexer's name-based .html
+        // filter silently drops these blobs and older spec versions go unindexed.
+        if (contentType?.StartsWith("text/html", StringComparison.OrdinalIgnoreCase) == true
+            && !HasFileExtension(path))
+            path += ".html";
         return prefix + path;
+    }
+
+    static bool HasFileExtension(string path)
+    {
+        var lastSlash = path.LastIndexOf('/');
+        var fileName = lastSlash >= 0 ? path[(lastSlash + 1)..] : path;
+        return fileName.Contains('.');
     }
 
     async Task LoadStateAsync()
@@ -702,8 +784,17 @@ sealed class OpcUaIndexer
         var htmlBlobs = new List<string>();
         await foreach (var item in _container.GetBlobsAsync())
         {
-            if (item.Name.EndsWith(".html", StringComparison.OrdinalIgnoreCase))
+            // Defense-in-depth pairing with the crawler's UrlToBlobName fix:
+            // accept blobs by either the .html name suffix or a text/html
+            // Content-Type. This ensures previously crawled blobs that were
+            // saved without an .html extension (e.g., /DI/v102/docs/1) still
+            // get indexed.
+            var ct = item.Properties?.ContentType ?? "";
+            if (item.Name.EndsWith(".html", StringComparison.OrdinalIgnoreCase)
+                || ct.StartsWith("text/html", StringComparison.OrdinalIgnoreCase))
+            {
                 htmlBlobs.Add(item.Name);
+            }
         }
         _log.LogInformation("[INDEX] HtmlBlobs={Count}", htmlBlobs.Count);
         await _tracker.UpdateAsync("index", "running", htmlBlobs: htmlBlobs.Count);

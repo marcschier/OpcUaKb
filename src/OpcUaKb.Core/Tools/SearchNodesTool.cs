@@ -3,7 +3,7 @@ using System.Text;
 using ModelContextProtocol.Server;
 
 [McpServerToolType]
-static class SearchNodesTool
+public static class SearchNodesTool
 {
     [McpServerTool(Name = "search_nodes"),
      Description("Search OPC UA NodeSet nodes with structured filters. " +

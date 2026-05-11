@@ -400,6 +400,12 @@ var cognitiveServicesOpenAIUserRole = subscriptionResourceId(
   '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd'
 )
 
+// Search Index Data Reader (data-plane read access to Azure AI Search indexes)
+var searchIndexDataReaderRole = subscriptionResourceId(
+  'Microsoft.Authorization/roleDefinitions',
+  '1407120a-92aa-4202-b7e9-c0e197c71c8f'
+)
+
 resource searchFoundryRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(search.id, foundry.id, cognitiveServicesOpenAIUserRole)
   scope: foundry
@@ -568,6 +574,30 @@ resource agentFoundryRoleAssignment 'Microsoft.Authorization/roleAssignments@202
     principalId: agent.identity.principalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: cognitiveServicesOpenAIUserRole
+  }
+}
+
+// Search Index Data Reader on the search service for both the agent's
+// system-assigned MI (used by the embedded SearchService for direct index
+// queries) and the user-assigned MI (used for bot JWT validation; granted
+// for defense in depth so either identity can read the index without keys).
+resource agentSearchRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(agent.id, search.id, searchIndexDataReaderRole)
+  scope: search
+  properties: {
+    principalId: agent.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: searchIndexDataReaderRole
+  }
+}
+
+resource agentIdentitySearchRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(agentIdentity.id, search.id, searchIndexDataReaderRole)
+  scope: search
+  properties: {
+    principalId: agentIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: searchIndexDataReaderRole
   }
 }
 

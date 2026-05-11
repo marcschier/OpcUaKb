@@ -37,7 +37,7 @@ if (useStdio)
     builder.Services
         .AddMcpServer(o => o.ServerInfo = new() { Name = "opcua-kb", Version = "1.0.0" })
         .WithStdioServerTransport()
-        .WithToolsFromAssembly();
+        .WithToolsFromAssembly(typeof(SearchNodesTool).Assembly);
     await builder.Build().RunAsync();
 }
 else
@@ -49,7 +49,7 @@ else
     builder.Services
         .AddMcpServer(o => o.ServerInfo = new() { Name = "opcua-kb", Version = "1.0.0" })
         .WithHttpTransport(o => o.Stateless = true)
-        .WithToolsFromAssembly();
+        .WithToolsFromAssembly(typeof(SearchNodesTool).Assembly);
 
     // Configuration
     var apiKey = Environment.GetEnvironmentVariable("MCP_API_KEY")

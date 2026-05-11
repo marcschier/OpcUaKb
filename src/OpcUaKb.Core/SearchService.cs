@@ -6,7 +6,7 @@ using Azure.Search.Documents.Models;
 // Shared Azure AI Search client for all MCP tools.
 // ═══════════════════════════════════════════════════════════════════════
 
-sealed class SearchService
+sealed public class SearchService
 {
     const string DefaultIndexName = "opcua-content-index";
 

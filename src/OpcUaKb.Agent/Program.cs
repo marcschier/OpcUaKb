@@ -74,10 +74,22 @@ builder.AddAgent<OpcUaAgent>();
 builder.Services.AddSingleton<IStorage, MemoryStorage>();
 
 // ───────────────────────────────────────────────────────────────────────
-// OPC UA Knowledge Base service (reads SEARCH_*, AOAI_*, KB_NAME,
+// OPC UA Knowledge Base services (read SEARCH_*, AOAI_*, KB_NAME,
 // GPT_DEPLOYMENT env vars internally).
+//
+//   SearchService        — shared Azure AI Search client used by every
+//                          structured tool (search_nodes, count_nodes, …).
+//   KbService            — KB retrieve + GPT-4o synthesis used by the
+//                          search_docs_rag fallback tool.
+//   AoaiChatClient       — raw chat-completions HTTP client used by the
+//                          tool-using agent loop in OpcUaAgent.
+//   AgentToolDispatcher  — reflects [McpServerTool] methods in OpcUaKb.Core
+//                          and bridges them into OpenAI function-calling.
 // ───────────────────────────────────────────────────────────────────────
+builder.Services.AddSingleton<SearchService>();
 builder.Services.AddSingleton<KbService>();
+builder.Services.AddSingleton<AoaiChatClient>();
+builder.Services.AddSingleton<AgentToolDispatcher>();
 
 var app = builder.Build();
 
