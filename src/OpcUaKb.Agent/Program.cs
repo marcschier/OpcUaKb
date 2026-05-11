@@ -14,11 +14,18 @@ var builder = WebApplication.CreateBuilder(args);
 
 // ───────────────────────────────────────────────────────────────────────
 // Wire env-var bot credentials into IConfiguration so MSAL + token
-// validation can resolve them. The appsettings.json template uses
-// $BOT_ID / $BOT_PASSWORD placeholders that are substituted at deploy
-// time; here we additionally support standard MicrosoftAppId env vars.
-// When BOT_ID is empty (local dev / Teams App Test Tool), the SDK runs
-// the channel adapter in anonymous mode.
+// validation can resolve them.
+//
+// Three modes are supported:
+//
+//   1. UserManagedIdentity (default in Azure): BOT_AUTH_TYPE=UserManagedIdentity,
+//      BOT_ID=<UAMI clientId>. No secret needed; MSAL uses the container's
+//      assigned user-managed identity to acquire tokens.
+//
+//   2. ClientSecret (legacy / non-Microsoft tenants): BOT_AUTH_TYPE=ClientSecret
+//      (or unset), BOT_ID=<Entra appId>, BOT_PASSWORD=<client secret>.
+//
+//   3. Anonymous (local dev / Teams App Test Tool): BOT_ID empty.
 // ───────────────────────────────────────────────────────────────────────
 var botId = Environment.GetEnvironmentVariable("BOT_ID")
          ?? Environment.GetEnvironmentVariable("MicrosoftAppId")
@@ -26,10 +33,23 @@ var botId = Environment.GetEnvironmentVariable("BOT_ID")
 var botPassword = Environment.GetEnvironmentVariable("BOT_PASSWORD")
                ?? Environment.GetEnvironmentVariable("MicrosoftAppPassword")
                ?? "";
+var botTenantId = Environment.GetEnvironmentVariable("BOT_TENANT_ID") ?? "";
+var botAuthType = Environment.GetEnvironmentVariable("BOT_AUTH_TYPE");
+if (string.IsNullOrWhiteSpace(botAuthType))
+{
+    botAuthType = string.IsNullOrWhiteSpace(botPassword) ? "ClientSecret" : "ClientSecret";
+}
 
 builder.Configuration["TokenValidation:Audiences:0"] = botId;
+builder.Configuration["Connections:ServiceConnection:Settings:AuthType"] = botAuthType;
 builder.Configuration["Connections:ServiceConnection:Settings:ClientId"] = botId;
 builder.Configuration["Connections:ServiceConnection:Settings:ClientSecret"] = botPassword;
+if (!string.IsNullOrWhiteSpace(botTenantId))
+{
+    builder.Configuration["Connections:ServiceConnection:Settings:TenantId"] = botTenantId;
+    builder.Configuration["Connections:ServiceConnection:Settings:AuthorityEndpoint"] =
+        $"https://login.microsoftonline.com/{botTenantId}";
+}
 
 // ───────────────────────────────────────────────────────────────────────
 // Core ASP.NET Core services

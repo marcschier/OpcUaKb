@@ -7,3 +7,4 @@ appsettings.*.json
 nupkg/
 
 pipeline-status.json
+agents/m365-agent/appPackage/build/

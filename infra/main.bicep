@@ -28,12 +28,22 @@ param cloudLibUsername string = ''
 @secure()
 param cloudLibPassword string = ''
 
-@description('Optional: Entra app appId for the Bot Framework agent (set by install-agent.ps1)')
+@description('Optional: Entra app appId for the Bot Framework agent (set by install-agent.ps1). Ignored when botAppType is UserAssignedMSI.')
 param botAppId string = ''
 
-@description('Optional: Entra app client secret for the Bot Framework agent')
+@description('Optional: Entra app client secret for the Bot Framework agent. Ignored when botAppType is UserAssignedMSI.')
 @secure()
 param botAppPassword string = ''
+
+@description('Bot msaAppType. UserAssignedMSI (default) avoids secrets and is policy-compliant in most tenants. MultiTenant / SingleTenant require an Entra app.')
+@allowed([ 'UserAssignedMSI', 'MultiTenant', 'SingleTenant' ])
+param botAppType string = 'UserAssignedMSI'
+
+@description('Tenant ID for SingleTenant or UserAssignedMSI bots. Defaults to current subscription tenant.')
+param botTenantId string = subscription().tenantId
+
+@description('Set to true to provision the Bot Service + channels. Defaults to true when botAppType is UserAssignedMSI (which provisions its own identity); for MultiTenant/SingleTenant, set true once you have a botAppId.')
+param enableBot bool = (botAppType == 'UserAssignedMSI') || !empty(botAppId)
 
 // ── Derived names ────────────────────────────────────────────────────
 var searchName = '${prefix}-search'
@@ -424,11 +434,26 @@ resource mcpServerFoundryRoleAssignment 'Microsoft.Authorization/roleAssignments
 var agentAppName = '${prefix}-agent'
 var agentImage = empty(pipelineImage) ? 'mcr.microsoft.com/dotnet/aspnet:10.0' : '${acr.properties.loginServer}/opcua-kb-agent:latest'
 
+// User-assigned managed identity used as the bot's app identity when
+// botAppType is UserAssignedMSI. The Container App also runs under this
+// identity so it can validate inbound JWTs and call Azure resources.
+resource agentIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: '${agentAppName}-identity'
+  location: location
+}
+
+// Effective bot app id: UAMI clientId for UserAssignedMSI, otherwise the
+// Entra app id provided by the caller.
+var effectiveBotAppId = botAppType == 'UserAssignedMSI' ? agentIdentity.properties.clientId : botAppId
+
 resource agent 'Microsoft.App/containerApps@2024-03-01' = {
   name: agentAppName
   location: location
   identity: {
-    type: 'SystemAssigned'
+    type: 'SystemAssigned, UserAssigned'
+    userAssignedIdentities: {
+      '${agentIdentity.id}': {}
+    }
   }
   properties: {
     environmentId: containerEnv.id
@@ -456,12 +481,12 @@ resource agent 'Microsoft.App/containerApps@2024-03-01' = {
           name: 'search-api-key'
           value: search.listAdminKeys().primaryKey
         }
-      ], empty(botAppPassword) ? [] : [
+      ], (botAppType != 'UserAssignedMSI' && !empty(botAppPassword)) ? [
         {
           name: 'bot-password'
           value: botAppPassword
         }
-      ])
+      ] : [])
     }
     template: {
       containers: [
@@ -485,7 +510,20 @@ resource agent 'Microsoft.App/containerApps@2024-03-01' = {
               name: 'AOAI_ENDPOINT'
               value: foundry.properties.endpoint
             }
-          ], empty(botAppId) ? [] : [
+          ], !enableBot ? [] : (botAppType == 'UserAssignedMSI' ? [
+            {
+              name: 'BOT_ID'
+              value: agentIdentity.properties.clientId
+            }
+            {
+              name: 'BOT_TENANT_ID'
+              value: botTenantId
+            }
+            {
+              name: 'BOT_AUTH_TYPE'
+              value: 'UserManagedIdentity'
+            }
+          ] : [
             {
               name: 'BOT_ID'
               value: botAppId
@@ -494,7 +532,15 @@ resource agent 'Microsoft.App/containerApps@2024-03-01' = {
               name: 'BOT_PASSWORD'
               secretRef: 'bot-password'
             }
-          ])
+            {
+              name: 'BOT_TENANT_ID'
+              value: botTenantId
+            }
+            {
+              name: 'BOT_AUTH_TYPE'
+              value: 'ClientSecret'
+            }
+          ]))
         }
       ]
       scale: {
@@ -525,7 +571,7 @@ resource agentFoundryRoleAssignment 'Microsoft.Authorization/roleAssignments@202
   }
 }
 
-resource bot 'Microsoft.BotService/botServices@2022-09-15' = if (!empty(botAppId)) {
+resource bot 'Microsoft.BotService/botServices@2022-09-15' = if (enableBot) {
   name: agentAppName
   location: 'global'
   kind: 'azurebot'
@@ -536,8 +582,10 @@ resource bot 'Microsoft.BotService/botServices@2022-09-15' = if (!empty(botAppId
     displayName: 'OPC UA Expert'
     description: 'OPC UA Knowledge Base Agent for Microsoft 365 Copilot and Teams'
     iconUrl: 'https://docs.botframework.com/static/devportal/client/images/bot-framework-default.png'
-    msaAppType: 'MultiTenant'
-    msaAppId: botAppId
+    msaAppType: botAppType
+    msaAppId: effectiveBotAppId
+    msaAppTenantId: botAppType == 'MultiTenant' ? null : botTenantId
+    msaAppMSIResourceId: botAppType == 'UserAssignedMSI' ? agentIdentity.id : null
     endpoint: 'https://${agent.properties.configuration.ingress.fqdn}/api/messages'
     developerAppInsightKey: ''
     developerAppInsightsApplicationId: ''
@@ -546,7 +594,7 @@ resource bot 'Microsoft.BotService/botServices@2022-09-15' = if (!empty(botAppId
   }
 }
 
-resource botTeamsChannel 'Microsoft.BotService/botServices/channels@2022-09-15' = if (!empty(botAppId)) {
+resource botTeamsChannel 'Microsoft.BotService/botServices/channels@2022-09-15' = if (enableBot) {
   parent: bot
   name: 'MsTeamsChannel'
   location: 'global'
@@ -559,7 +607,7 @@ resource botTeamsChannel 'Microsoft.BotService/botServices/channels@2022-09-15' 
   }
 }
 
-resource botM365Channel 'Microsoft.BotService/botServices/channels@2022-09-15' = if (!empty(botAppId)) {
+resource botM365Channel 'Microsoft.BotService/botServices/channels@2022-09-15' = if (enableBot) {
   parent: bot
   name: 'M365Extensions'
   location: 'global'
@@ -611,4 +659,9 @@ output mcpEndpoint string = 'https://${search.name}.search.windows.net/knowledge
 
 output mcpServerEndpoint string = 'https://${mcpServer.properties.configuration.ingress.fqdn}'
 output agentEndpoint string = 'https://${agent.properties.configuration.ingress.fqdn}'
-output botName string = empty(botAppId) ? '' : bot.name
+output botName string = enableBot ? bot.name : ''
+output agentIdentityClientId string = agentIdentity.properties.clientId
+output agentIdentityResourceId string = agentIdentity.id
+output botAppId string = effectiveBotAppId
+output botAppType string = botAppType
+output botTenantId string = botTenantId

@@ -35,6 +35,7 @@ PREFIX="opcua-kb"
 LOCATION="eastus"
 APP_DISPLAY_NAME="OPC UA KB Agent"
 SKIP_IMAGE_BUILD=0
+BOT_AUTH_TYPE="UserAssignedMSI"
 
 usage() {
   cat <<EOF
@@ -47,6 +48,7 @@ Options:
   -p, --prefix           Resource name prefix (default: ${PREFIX})
   -l, --location         Azure region (default: ${LOCATION})
   -n, --app-name         Entra app display name (default: ${APP_DISPLAY_NAME})
+      --bot-auth-type    UserAssignedMSI (default) or ClientSecret
       --skip-image-build Skip building/pushing the agent container image
   -h, --help             Show this help message
 EOF
@@ -59,6 +61,7 @@ while [[ $# -gt 0 ]]; do
     -p|--prefix)           PREFIX="$2"; shift 2 ;;
     -l|--location)         LOCATION="$2"; shift 2 ;;
     -n|--app-name)         APP_DISPLAY_NAME="$2"; shift 2 ;;
+    --bot-auth-type)       BOT_AUTH_TYPE="$2"; shift 2 ;;
     --skip-image-build)    SKIP_IMAGE_BUILD=1; shift ;;
     -h|--help)             usage ;;
     *) fail "Unknown option: $1. Use --help for usage." ;;
@@ -111,8 +114,14 @@ az group create -n "$RESOURCE_GROUP" -l "$LOCATION" -o none
 ok "Resource group ready."
 
 # ════════════════════════════════════════════════════════════════════════
-# Step 3: Create or get Entra app registration
+# Step 3: Create or get Entra app registration (ClientSecret mode only)
 # ════════════════════════════════════════════════════════════════════════
+APP_ID=""
+APP_OBJECT_ID=""
+APP_PASSWORD=""
+
+if [[ "$BOT_AUTH_TYPE" == "ClientSecret" ]]; then
+
 info "Looking up Entra app registration: ${APP_DISPLAY_NAME}"
 
 EXISTING_APPS="$(az ad app list --display-name "$APP_DISPLAY_NAME" --query '[].{appId:appId,id:id}' -o json 2>/dev/null || echo '[]')"
@@ -180,6 +189,10 @@ else
   ok "Service principal already exists."
 fi
 
+else
+  info "BotAuthType=UserAssignedMSI — skipping Entra app + secret (Bicep provisions a user-assigned managed identity)."
+fi
+
 # ════════════════════════════════════════════════════════════════════════
 # Step 7: Resolve existing pipelineImage so we don't accidentally reset it
 # ════════════════════════════════════════════════════════════════════════
@@ -225,9 +238,12 @@ info "Running Bicep deployment (this may take several minutes)..."
 BICEP_PARAMS=(
   "prefix=${PREFIX}"
   "location=${LOCATION}"
-  "botAppId=${APP_ID}"
-  "botAppPassword=${APP_PASSWORD}"
 )
+if [[ "$BOT_AUTH_TYPE" == "UserAssignedMSI" ]]; then
+  BICEP_PARAMS+=("botAppType=UserAssignedMSI")
+else
+  BICEP_PARAMS+=("botAppId=${APP_ID}" "botAppPassword=${APP_PASSWORD}")
+fi
 if [[ -n "$EXISTING_PIPELINE_IMAGE" ]]; then
   BICEP_PARAMS+=("pipelineImage=${EXISTING_PIPELINE_IMAGE}")
 fi
@@ -238,6 +254,14 @@ az deployment group create \
     --parameters "${BICEP_PARAMS[@]}" \
     -o none
 ok "Bicep deployment complete."
+
+# For UserAssignedMSI, the bot app id is the UAMI's client ID.
+if [[ "$BOT_AUTH_TYPE" == "UserAssignedMSI" ]]; then
+  info "Resolving bot app id from Bicep outputs (UAMI client ID)..."
+  APP_ID="$(az identity show -g "$RESOURCE_GROUP" -n "${PREFIX}-agent-identity" --query "clientId" -o tsv 2>/dev/null || true)"
+  [[ -z "$APP_ID" ]] && fail "Could not resolve UAMI client ID."
+  ok "Bot app id (UAMI): ${APP_ID}"
+fi
 
 # If we couldn't push the image before Bicep (because ACR didn't exist),
 # do it now and continue.

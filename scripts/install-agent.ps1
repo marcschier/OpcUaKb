@@ -29,7 +29,27 @@ param(
     [string]$Prefix = "opcua-kb",
     [string]$Location = "eastus",
     [string]$AppDisplayName = "OPC UA KB Agent",
-    [switch]$SkipImageBuild
+    [switch]$SkipImageBuild,
+    # Auth mode for the bot:
+    #   - UserAssignedMSI (default): policy-compliant, no Entra app or secret
+    #     needed. Bicep creates a user-assigned managed identity and the bot
+    #     uses it as its app identity. Recommended for Microsoft tenants and
+    #     anywhere CLI app-creation / secret-rotation is blocked by policy.
+    #   - ClientSecret: legacy mode that creates an Entra app + client secret.
+    [ValidateSet("UserAssignedMSI", "ClientSecret")]
+    [string]$BotAuthType = "UserAssignedMSI",
+    # Pass an existing Entra app ID to skip the registration step. Useful in
+    # tenants that block CLI creation of app registrations (e.g., require
+    # serviceManagementReference policy). Only meaningful for ClientSecret.
+    [string]$BotAppId = "",
+    # Required by some tenant policies (e.g., Microsoft internal) for new
+    # app registrations. Only meaningful for ClientSecret.
+    [string]$ServiceManagementReference = "",
+    # Sign-in audience. Multi-tenant (default) lets the bot be installed in
+    # any Teams tenant. Some org policies block multi-tenant — pass
+    # 'AzureADMyOrg' for single-tenant. Only meaningful for ClientSecret.
+    [ValidateSet("AzureADMultipleOrgs", "AzureADMyOrg")]
+    [string]$SignInAudience = "AzureADMultipleOrgs"
 )
 
 $ErrorActionPreference = "Stop"
@@ -69,26 +89,26 @@ $PyPath = $PyPathCandidates | Where-Object { Test-Path $_ } | Select-Object -Fir
 
 # Invoke-Az: call az via its embedded python directly when possible.
 # This bypasses the az.cmd shim which mangles quoted args containing $, !, etc.
+# NOTE: must not be an advanced function (no [Parameter()] attribute) to
+# avoid PowerShell's parameter binding consuming '-o tsv' style args.
 function Invoke-Az {
-    param([Parameter(ValueFromRemainingArguments = $true)] [string[]]$Args)
-    if ($PyPath) {
-        & $PyPath -IBm azure.cli @Args
+    if ($script:PyPath) {
+        & $script:PyPath -IBm azure.cli @args
     } else {
-        & az @Args
+        & az @args
     }
     if ($LASTEXITCODE -ne 0) {
-        throw "az CLI failed (exit $LASTEXITCODE): az $($Args -join ' ')"
+        throw "az CLI failed (exit $LASTEXITCODE): az $($args -join ' ')"
     }
 }
 
 # Invoke-AzText: same as Invoke-Az but captures stdout as a single string,
 # stripped of trailing whitespace. Returns $null on empty.
 function Invoke-AzText {
-    param([Parameter(ValueFromRemainingArguments = $true)] [string[]]$Args)
-    $out = if ($PyPath) {
-        & $PyPath -IBm azure.cli @Args 2>$null
+    $out = if ($script:PyPath) {
+        & $script:PyPath -IBm azure.cli @args 2>$null
     } else {
-        & az @Args 2>$null
+        & az @args 2>$null
     }
     if ($LASTEXITCODE -ne 0) { return $null }
     if ($null -eq $out) { return $null }
@@ -134,43 +154,74 @@ Invoke-Az group create -n $ResourceGroup -l $Location -o none
 Write-Ok "Resource group ready."
 
 # ════════════════════════════════════════════════════════════════════════
-# Step 3: Create or get Entra app registration
+# Step 3: Create or get Entra app registration (ClientSecret mode only)
 # ════════════════════════════════════════════════════════════════════════
-Write-Info "Looking up Entra app registration: $AppDisplayName"
-
-$existingApps = Invoke-AzText ad app list --display-name $AppDisplayName --query "[].{appId:appId,id:id}" -o json
 $AppId = $null
 $AppObjectId = $null
+$AppPassword = ""
 
-if ($existingApps) {
-    $apps = $existingApps | ConvertFrom-Json
-    if ($apps.Count -gt 0) {
-        $AppId       = $apps[0].appId
-        $AppObjectId = $apps[0].id
-        Write-Ok "Found existing app registration: $AppId"
+if ($BotAuthType -eq "ClientSecret") {
+
+# Honor explicit -BotAppId override (skips creation lookup; useful for tenants
+# that block CLI app-registration creation policies).
+if ($BotAppId) {
+    Write-Info "Using provided BotAppId: $BotAppId (skipping Entra creation)"
+    $AppId = $BotAppId
+    # Try to get object ID for credential rotation
+    $appLookup = Invoke-AzText ad app show --id $AppId --query "{appId:appId,id:id}" -o json
+    if ($appLookup) {
+        $AppObjectId = ($appLookup | ConvertFrom-Json).id
     }
-}
+} else {
+    Write-Info "Looking up Entra app registration: $AppDisplayName"
+    $existingApps = Invoke-AzText ad app list --display-name $AppDisplayName --query "[].{appId:appId,id:id}" -o json
+    if ($existingApps) {
+        $apps = $existingApps | ConvertFrom-Json
+        if ($apps.Count -gt 0) {
+            $AppId       = $apps[0].appId
+            $AppObjectId = $apps[0].id
+            Write-Ok "Found existing app registration: $AppId"
+        }
+    }
 
-if (-not $AppId) {
-    Write-Info "Creating new app registration..."
-    # Bot Framework requires:
-    #   - sign-in audience: AzureADMultipleOrgs (multi-tenant) so the bot can
-    #     receive messages from any Teams/Copilot tenant.
-    #   - web reply URL https://token.botframework.com/.auth/web/redirect
-    #     for OAuth handoff via Bot Framework Token Service.
-    $createOut = Invoke-AzText ad app create `
-        --display-name $AppDisplayName `
-        --sign-in-audience AzureADMultipleOrgs `
-        --web-redirect-uris "https://token.botframework.com/.auth/web/redirect" `
-        -o json
-    if (-not $createOut) { Write-Fail "Failed to create Entra app registration." }
-    $appObj = $createOut | ConvertFrom-Json
-    $AppId       = $appObj.appId
-    $AppObjectId = $appObj.id
-    Write-Ok "Created app registration: $AppId"
+    if (-not $AppId) {
+        Write-Info "Creating new app registration..."
+        # Bot Framework requires:
+        #   - sign-in audience: AzureADMultipleOrgs (multi-tenant) so the bot can
+        #     receive messages from any Teams/Copilot tenant.
+        #   - web reply URL https://token.botframework.com/.auth/web/redirect
+        #     for OAuth handoff via Bot Framework Token Service.
+        $createArgs = @(
+            'ad', 'app', 'create',
+            '--display-name', $AppDisplayName,
+            '--sign-in-audience', $SignInAudience,
+            '--web-redirect-uris', 'https://token.botframework.com/.auth/web/redirect',
+            '-o', 'json'
+        )
+        if ($ServiceManagementReference) {
+            $createArgs += @('--service-management-reference', $ServiceManagementReference)
+        }
+        $createOut = Invoke-AzText @createArgs
+        if (-not $createOut) {
+            Write-Host ""
+            Write-Host "Tenant may require serviceManagementReference policy." -ForegroundColor Yellow
+            Write-Host "Workarounds:" -ForegroundColor Yellow
+            Write-Host "  1. Pass -ServiceManagementReference <service-tree-guid>" -ForegroundColor Yellow
+            Write-Host "  2. Create app manually in Entra portal, then re-run with -BotAppId <appId>" -ForegroundColor Yellow
+            Write-Host "     Required settings:" -ForegroundColor Yellow
+            Write-Host "       - Sign-in audience: Multi-tenant (AzureADMultipleOrgs)" -ForegroundColor Yellow
+            Write-Host "       - Web redirect URI: https://token.botframework.com/.auth/web/redirect" -ForegroundColor Yellow
+            Write-Host "  3. Use -BotAuthType UserAssignedMSI (no app registration needed)" -ForegroundColor Yellow
+            Write-Fail "Failed to create Entra app registration."
+        }
+        $appObj = $createOut | ConvertFrom-Json
+        $AppId       = $appObj.appId
+        $AppObjectId = $appObj.id
+        Write-Ok "Created app registration: $AppId"
 
-    # Eventual consistency — give Graph a moment before we touch the app again.
-    Start-Sleep -Seconds 5
+        # Eventual consistency — give Graph a moment before we touch the app again.
+        Start-Sleep -Seconds 5
+    }
 }
 
 # Make sure the redirect URI is present even on existing apps (idempotent).
@@ -196,7 +247,12 @@ $credOut = Invoke-AzText ad app credential reset `
     --years 2 `
     --append `
     -o json
-if (-not $credOut) { Write-Fail "Failed to create client secret." }
+if (-not $credOut) {
+    Write-Host ""
+    Write-Host "Tenant policy may block client-secret credentials." -ForegroundColor Yellow
+    Write-Host "Recommended: re-run with -BotAuthType UserAssignedMSI (no secret required)." -ForegroundColor Yellow
+    Write-Fail "Failed to create client secret."
+}
 $cred = $credOut | ConvertFrom-Json
 $AppPassword = $cred.password
 if ([string]::IsNullOrWhiteSpace($AppPassword)) { Write-Fail "Empty client secret returned." }
@@ -212,6 +268,10 @@ if (-not $spExists) {
     Write-Ok "Service principal created."
 } else {
     Write-Ok "Service principal already exists."
+}
+
+} else {
+    Write-Info "BotAuthType=UserAssignedMSI — skipping Entra app + secret (Bicep provisions a user-assigned managed identity)."
 }
 
 # ════════════════════════════════════════════════════════════════════════
@@ -265,10 +325,17 @@ $bicepArgs = @(
     "--template-file", "infra/main.bicep",
     "--parameters",
     "prefix=$Prefix",
-    "location=$Location",
-    "botAppId=$AppId",
-    "botAppPassword=$AppPassword"
+    "location=$Location"
 )
+if ($BotAuthType -eq "UserAssignedMSI") {
+    $bicepArgs += "botAppType=UserAssignedMSI"
+} else {
+    $bicepArgs += @("botAppId=$AppId", "botAppPassword=$AppPassword")
+    if ($SignInAudience -eq "AzureADMyOrg") {
+        $tenantId = Invoke-AzText account show --query "tenantId" -o tsv
+        $bicepArgs += @("botAppType=SingleTenant", "botTenantId=$tenantId")
+    }
+}
 if ($ExistingPipelineImage) {
     $bicepArgs += "pipelineImage=$ExistingPipelineImage"
 }
@@ -276,6 +343,24 @@ $bicepArgs += @("-o", "none")
 
 Invoke-Az @bicepArgs
 Write-Ok "Bicep deployment complete."
+
+# For UserAssignedMSI, the bot app id is the UAMI's client ID, set by Bicep.
+# Read it from Bicep outputs so we can use it later for the Teams manifest.
+if ($BotAuthType -eq "UserAssignedMSI") {
+    Write-Info "Resolving bot app id from Bicep outputs (UAMI client ID)..."
+    $deploymentName = Invoke-AzText deployment group list `
+        -g $ResourceGroup `
+        --query "sort_by([?contains(name,'main')], &properties.timestamp)[-1].name" `
+        -o tsv
+    if (-not $deploymentName) {
+        # Fall back: query the UAMI directly
+        $AppId = Invoke-AzText identity show -g $ResourceGroup -n "$Prefix-agent-identity" --query "clientId" -o tsv
+    } else {
+        $AppId = Invoke-AzText deployment group show -g $ResourceGroup -n $deploymentName --query "properties.outputs.botAppId.value" -o tsv
+    }
+    if (-not $AppId) { Write-Fail "Could not resolve UAMI client ID from Bicep outputs." }
+    Write-Ok "Bot app id (UAMI): $AppId"
+}
 
 # If we couldn't push the image before Bicep (because ACR didn't exist),
 # do it now and continue.
