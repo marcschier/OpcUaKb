@@ -27,7 +27,7 @@ static class SpecSummaryTool
         }
         else
         {
-            filter = $"(content_type eq 'nodeset_summary' or content_type eq 'cloudlib_summary') and spec_part eq '{spec}'";
+            filter = $"(content_type eq 'nodeset_summary' or content_type eq 'cloudlib_summary') and {SpecFilter.Match(spec)}";
             query = "*";
         }
 

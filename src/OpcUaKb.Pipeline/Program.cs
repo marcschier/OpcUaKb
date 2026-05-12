@@ -20,7 +20,20 @@ using Azure.Storage.Blobs.Models;
 using Microsoft.Extensions.Logging;
 
 // ═══════════════════════════════════════════════════════════════════════
-// OPC UA Knowledge Base Pipeline — Crawl + Index
+// OPC UA Knowledge Base Pipeline — module-based orchestration.
+//
+// Phases (in order):
+//   1. spec_discovery   — SpecCatalog: root listing + per-spec landings
+//   2. spec_download    — SpecDownloader: html/, sts-xml/, markdown/ blobs
+//   3. image_fetch      — ImageFetcher: figure binaries (/img/{sha}.png)
+//   4. github_fetch     — GitHubFetcher: UA-Nodeset + companion spec repos
+//   5. nodeset_parse    — OpcUaNodeSetParser over api/nodesets/ + nodesets/
+//   6. spec_estimate    — SpecIndexer.EstimateAsync (preflight)
+//   7. spec_index       — SpecIndexer.IndexAsync (HTML+STS → embed → upload)
+//   8. cloudlib         — UA-CloudLibrary nodesets (LAST so opcf namespace
+//                         coverage is complete for source tagging)
+//
+// All search uploads target opcua-content-index-v2 (blue-green migration).
 // Designed to run as an Azure Container Apps scheduled job.
 // Emits structured JSON telemetry for Log Analytics dashboard.
 // ═══════════════════════════════════════════════════════════════════════
@@ -36,14 +49,48 @@ using var loggerFactory = LoggerFactory.Create(b =>
 });
 var log = loggerFactory.CreateLogger("Pipeline");
 
-var storageConnStr = Require("STORAGE_CONNECTION_STRING");
+var storageAccountName = Require("STORAGE_ACCOUNT_NAME");
 var searchEndpoint = Require("SEARCH_ENDPOINT");
 var searchApiKey   = Require("SEARCH_API_KEY");
 var aoaiEndpoint   = Require("AOAI_ENDPOINT");
-var credential     = new DefaultAzureCredential();
+var githubToken    = Environment.GetEnvironmentVariable("GITHUB_TOKEN");
+var environment    = Environment.GetEnvironmentVariable("ENVIRONMENT") ?? "Development";
+
+if (string.IsNullOrEmpty(githubToken))
+{
+    if (string.Equals(environment, "Production", StringComparison.OrdinalIgnoreCase))
+        throw new InvalidOperationException(
+            "GITHUB_TOKEN is required in Production but was not set.");
+    log.LogWarning(
+        "[PIPELINE] GITHUB_TOKEN not set — anonymous GitHub quota is 60 req/hr. "
+        + "OK for local dev, NOT acceptable in production.");
+}
+
+var credential = new DefaultAzureCredential();
+
+// Single BlobServiceClient using DefaultAzureCredential — the storage
+// account has shared-key auth disabled, so all access flows through the
+// pipeline job's system-assigned managed identity (Storage Blob Data
+// Contributor role granted in main.bicep).
+var blobs = new BlobServiceClient(
+    new Uri($"https://{storageAccountName}.blob.core.windows.net"),
+    credential);
+
+const string IndexNameV2 = "opcua-content-index-v2";
+
+// Shared HttpClient — never recreate inside loops (auth headers + sockets).
+var sharedHandler = new SocketsHttpHandler
+{
+    MaxConnectionsPerServer = 10,
+    PooledConnectionLifetime = TimeSpan.FromMinutes(10),
+    AutomaticDecompression = System.Net.DecompressionMethods.All,
+};
+using var http = new HttpClient(sharedHandler) { Timeout = TimeSpan.FromMinutes(2) };
+http.DefaultRequestHeaders.UserAgent.ParseAdd("OpcUaKb-Pipeline/2.0");
+http.DefaultRequestHeaders.Accept.ParseAdd("*/*");
 
 var statusTracker = new PipelineStatusTracker(
-    new BlobContainerClient(storageConnStr, "opcua-content"),
+    blobs.GetBlobContainerClient("opcua-content"),
     loggerFactory.CreateLogger<PipelineStatusTracker>());
 
 var sw = Stopwatch.StartNew();
@@ -51,56 +98,89 @@ var exitCode = 0;
 
 try
 {
-    // ── Phase 1: Crawl ─────────────────────────────────────────────────
-    log.LogInformation("[PIPELINE] Phase={Phase} Status={Status}", "crawl", "started");
-    await statusTracker.UpdateAsync("crawl", "running");
+    // ── Phase 1: Spec Discovery ───────────────────────────────────────
+    var phaseSw = await BeginPhaseAsync("spec_discovery");
+    var catalog = new SpecCatalog(http, loggerFactory.CreateLogger<SpecCatalog>());
+    var specs = await catalog.DiscoverAllSpecsAsync();
+    log.LogInformation("[PIPELINE] Phase=spec_discovery Specs={N}", specs.Count);
 
-    var crawler = new OpcUaCrawler(storageConnStr, loggerFactory.CreateLogger<OpcUaCrawler>(), statusTracker);
-    await crawler.RunAsync();
+    var landingsSem = new SemaphoreSlim(5);
+    var landingTasks = specs.Select(async spec =>
+    {
+        await landingsSem.WaitAsync();
+        try { return await catalog.GetLandingAsync(spec.SpecId); }
+        catch (Exception ex)
+        {
+            log.LogWarning("[PIPELINE] Phase=spec_discovery Spec={Spec} Error={Error}",
+                spec.SpecId, ex.Message);
+            return null;
+        }
+        finally { landingsSem.Release(); }
+    }).ToArray();
+    var landingResults = await Task.WhenAll(landingTasks);
+    var landings = landingResults.Where(l => l != null).Cast<SpecLanding>().ToList();
+    var allVersions = landings.SelectMany(l => l.Versions).ToList();
+    log.LogInformation(
+        "[PIPELINE] Phase=spec_discovery Landings={L} Versions={V} SupplementaryFiles={S}",
+        landings.Count, allVersions.Count, landings.Sum(l => l.SupplementaryFiles.Count));
+    await EndPhaseAsync("spec_discovery", phaseSw);
 
-    log.LogInformation("[PIPELINE] Phase={Phase} Status={Status} ElapsedSec={Elapsed}",
-        "crawl", "completed", (int)sw.Elapsed.TotalSeconds);
-    await statusTracker.UpdateAsync("crawl", "completed", elapsedSec: (int)sw.Elapsed.TotalSeconds);
+    // ── Phase 2: Spec Download ────────────────────────────────────────
+    phaseSw = await BeginPhaseAsync("spec_download");
+    var downloader = new SpecDownloader(http, blobs,
+        loggerFactory.CreateLogger<SpecDownloader>());
+    var (specDownloaded, specSkipped, specErrors) = await downloader.DownloadAsync(allVersions);
+    log.LogInformation(
+        "[PIPELINE] Phase=spec_download Downloaded={D} Skipped={S} Errors={E}",
+        specDownloaded, specSkipped, specErrors);
+    await statusTracker.UpdateAsync("spec_download", "running",
+        downloaded: specDownloaded, skipped: specSkipped, errors: specErrors);
+    await EndPhaseAsync("spec_download", phaseSw);
 
-    // ── Phase 2: Index ─────────────────────────────────────────────────
-    log.LogInformation("[PIPELINE] Phase={Phase} Status={Status}", "index", "started");
-    await statusTracker.UpdateAsync("index", "running");
+    // ── Phase 3: Image Fetch ──────────────────────────────────────────
+    phaseSw = await BeginPhaseAsync("image_fetch");
+    var imageShas = await ExtractImageShasAsync(blobs, log);
+    log.LogInformation("[PIPELINE] Phase=image_fetch UniqueShasReferenced={N}", imageShas.Count);
+    var imageFetcher = new ImageFetcher(http, blobs,
+        loggerFactory.CreateLogger<ImageFetcher>());
+    var (imgDownloaded, imgSkipped, imgErrors) = await imageFetcher.FetchAsync(imageShas);
+    log.LogInformation(
+        "[PIPELINE] Phase=image_fetch Downloaded={D} Skipped={S} Errors={E}",
+        imgDownloaded, imgSkipped, imgErrors);
+    await EndPhaseAsync("image_fetch", phaseSw);
 
-    var indexSw = Stopwatch.StartNew();
-    var indexer = new OpcUaIndexer(
-        storageConnStr, searchEndpoint, searchApiKey,
-        aoaiEndpoint, credential,
-        loggerFactory.CreateLogger<OpcUaIndexer>(), statusTracker);
-    await indexer.RunAsync();
+    // ── Phase 4: GitHub Fetch ─────────────────────────────────────────
+    phaseSw = await BeginPhaseAsync("github_fetch");
+    var ghRefs = await BuildGitHubRefsAsync(landings, blobs,
+        loggerFactory.CreateLogger<StsMetadataParser>(), log);
+    log.LogInformation("[PIPELINE] Phase=github_fetch DistinctRefs={N}", ghRefs.Count);
+    var ghFetcher = new GitHubFetcher(http, blobs, githubToken,
+        loggerFactory.CreateLogger<GitHubFetcher>());
+    var (ghDownloaded, ghSkipped, ghErrors) = await ghFetcher.FetchAsync(ghRefs);
+    log.LogInformation(
+        "[PIPELINE] Phase=github_fetch Downloaded={D} Skipped={S} Errors={E}",
+        ghDownloaded, ghSkipped, ghErrors);
+    await EndPhaseAsync("github_fetch", phaseSw);
 
-    log.LogInformation("[PIPELINE] Phase={Phase} Status={Status} ElapsedSec={Elapsed}",
-        "index", "completed", (int)indexSw.Elapsed.TotalSeconds);
-    await statusTracker.UpdateAsync("index", "completed",
-        elapsedSec: (int)indexSw.Elapsed.TotalSeconds);
-
-    // ── Phase 3: Parse NodeSets ─────────────────────────────────────────
-    log.LogInformation("[PIPELINE] Phase={Phase} Status={Status}", "nodeset", "started");
-    await statusTracker.UpdateAsync("nodeset", "running");
-
-    var nodesetSw = Stopwatch.StartNew();
-    var nodesetParser = new OpcUaNodeSetParser(storageConnStr, loggerFactory.CreateLogger<OpcUaNodeSetParser>());
+    // ── Phase 5: NodeSet Parse ────────────────────────────────────────
+    phaseSw = await BeginPhaseAsync("nodeset_parse");
+    var nodesetParser = new OpcUaNodeSetParser(blobs,
+        loggerFactory.CreateLogger<OpcUaNodeSetParser>());
     var nodesetDocs = await nodesetParser.ParseAllAsync();
-    log.LogInformation("[PIPELINE] Phase={Phase} Docs={Count}", "nodeset", nodesetDocs.Count);
+    log.LogInformation("[PIPELINE] Phase=nodeset_parse Docs={N}", nodesetDocs.Count);
 
-    // Shared search client for uploading nodeset + cloudlib docs
-    var searchClient = new SearchIndexClient(new Uri(searchEndpoint), new AzureKeyCredential(searchApiKey))
-        .GetSearchClient("opcua-content-index");
+    var v2SearchClient = new SearchIndexClient(
+        new Uri(searchEndpoint), new AzureKeyCredential(searchApiKey))
+        .GetSearchClient(IndexNameV2);
 
     if (nodesetDocs.Count > 0)
     {
-        // Generate summary documents for aggregation queries
         var summaryDocs = nodesetParser.GenerateSummaries(nodesetDocs);
-        log.LogInformation("[PIPELINE] Phase={Phase} Summaries={Count}", "nodeset-summary", summaryDocs.Count);
+        log.LogInformation(
+            "[PIPELINE] Phase=nodeset_parse Summaries={N}", summaryDocs.Count);
 
-        // Combine nodeset + summary docs for upload
         var allNodesetDocs = nodesetDocs.Concat(summaryDocs).ToList();
 
-        // Tag all opcfoundation docs with source and top popularity
         foreach (var doc in allNodesetDocs)
         {
             doc["source"] = "opcfoundation";
@@ -108,35 +188,16 @@ try
             doc["in_opcfoundation_index"] = true;
         }
 
-        // Upload nodeset docs to search index WITHOUT pre-computing embeddings.
-        log.LogInformation("[PIPELINE] Phase={Phase} Status={Status} Docs={Count}", "nodeset-upload", "started", allNodesetDocs.Count);
-        int nodesetUploaded = 0;
-        for (int i = 0; i < allNodesetDocs.Count; i += 100)
-        {
-            var batch = allNodesetDocs.Skip(i).Take(100).ToList();
-            try
-            {
-                await RetryHelper.RetrySearchAsync(async () =>
-                {
-                    await searchClient.IndexDocumentsAsync(IndexDocumentsBatch.Upload(batch));
-                    return true;
-                }, log);
-                nodesetUploaded += batch.Count;
-                if (nodesetUploaded % 1000 == 0)
-                    log.LogInformation("[NODESET] Uploaded={N} Total={T}", nodesetUploaded, allNodesetDocs.Count);
-            }
-            catch (Exception ex)
-            {
-                log.LogWarning("[NODESET] Phase=upload Error={Error} BatchStart={I}", ex.Message, i);
-            }
-        }
-
-        log.LogInformation("[PIPELINE] Phase={Phase} Status={Status} Uploaded={U}",
-            "nodeset", "completed", nodesetUploaded);
+        var nodesetUploaded = await UploadBatchedAsync(
+            v2SearchClient, allNodesetDocs, "NODESET", log);
+        log.LogInformation(
+            "[PIPELINE] Phase=nodeset_parse Uploaded={U} Expected={E}",
+            nodesetUploaded, allNodesetDocs.Count);
     }
 
-    // Collect opcfoundation namespace URIs (used by cloudlib phase to detect duplicates).
-    // Case-insensitive and normalized (trim trailing slash) so cloudlib comparisons are reliable.
+    // Collect opcfoundation namespaces for the CloudLib source-tagging step
+    // below. Built from the freshly parsed nodeset docs so coverage reflects
+    // the GitHubFetcher's output.
     var opcfNamespaces = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     foreach (var d in nodesetDocs)
     {
@@ -144,13 +205,34 @@ try
             opcfNamespaces.Add(s.TrimEnd('/'));
     }
     log.LogInformation("[PIPELINE] OpcFoundation namespaces collected={Count}", opcfNamespaces.Count);
+    await EndPhaseAsync("nodeset_parse", phaseSw);
 
-    // Phase 3b: CloudLibrary NodeSets (optional — only if credentials provided)
-    var cloudLib = CloudLibraryClient.TryCreate(storageConnStr, log);
+    // ── Phase 6: Spec Estimate (preflight) ────────────────────────────
+    phaseSw = await BeginPhaseAsync("spec_estimate");
+    var specIndexer = new SpecIndexer(blobs, searchEndpoint, searchApiKey,
+        aoaiEndpoint, credential, http, loggerFactory.CreateLogger<SpecIndexer>());
+    var estimate = await specIndexer.EstimateAsync();
+    log.LogInformation(
+        "[PIPELINE] Phase=spec_estimate Versions={V} EstimatedChunks={C} EstimatedTokens={T}",
+        estimate.VersionCount, estimate.EstimatedChunkCount, estimate.EstimatedTokens);
+    await EndPhaseAsync("spec_estimate", phaseSw);
+
+    // ── Phase 7: Spec Index (parse + embed + upload to v2) ────────────
+    phaseSw = await BeginPhaseAsync("spec_index");
+    var indexResult = await specIndexer.IndexAsync();
+    log.LogInformation(
+        "[PIPELINE] Phase=spec_index Chunks={C} Embedded={E} Uploaded={U} Errors={Err}",
+        indexResult.Chunks, indexResult.Embedded, indexResult.Uploaded, indexResult.Errors);
+    await statusTracker.UpdateAsync("spec_index", "running",
+        chunks: indexResult.Chunks, embedded: indexResult.Embedded,
+        indexed: indexResult.Uploaded);
+    await EndPhaseAsync("spec_index", phaseSw);
+
+    // ── Phase 8: CloudLibrary (LAST — uses opcfNamespaces from above) ─
+    var cloudLib = CloudLibraryClient.TryCreate(blobs, log);
     if (cloudLib != null)
     {
-        log.LogInformation("[PIPELINE] Phase={Phase} Status={Status}", "cloudlib", "started");
-        await statusTracker.UpdateAsync("cloudlib", "running");
+        phaseSw = await BeginPhaseAsync("cloudlib");
 
         var cloudLibEntries = await cloudLib.DownloadAllNodeSetsAsync();
         log.LogInformation("[CLOUDLIB] Downloaded {Count} NodeSet entries", cloudLibEntries.Count);
@@ -159,23 +241,21 @@ try
         {
             var cloudLibBlobNames = cloudLibEntries.Select(e => e.BlobName).ToList();
 
-            // Index entries by blob name for quick overlay of metadata onto parsed docs
             var metaByNs = cloudLibEntries
                 .Where(e => !string.IsNullOrEmpty(e.NamespaceUri))
                 .GroupBy(e => e.NamespaceUri)
                 .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
 
-            // Parse CloudLibrary NodeSets using the same parser
-            var cloudParser = new OpcUaNodeSetParser(storageConnStr, loggerFactory.CreateLogger<OpcUaNodeSetParser>());
+            var cloudParser = new OpcUaNodeSetParser(blobs,
+                loggerFactory.CreateLogger<OpcUaNodeSetParser>());
             var cloudDocs = await cloudParser.ParseBlobsAsync(cloudLibBlobNames);
             log.LogInformation("[CLOUDLIB] Parsed {Count} NodeSet documents", cloudDocs.Count);
 
-            // Generate summaries BEFORE mutating content_type — GenerateSummaries filters by
-            // content_type == "nodeset", so it must run while docs still have the original tag.
+            // Summaries must be computed BEFORE we rewrite content_type, since
+            // GenerateSummaries filters on content_type == "nodeset".
             var cloudSummaries = cloudParser.GenerateSummaries(cloudDocs);
             log.LogInformation("[CLOUDLIB] Generated {Count} summary documents", cloudSummaries.Count);
 
-            // Tag all cloudlib docs with distinct content_type + overlay API metadata
             foreach (var doc in cloudDocs)
             {
                 var ct = doc.TryGetValue("content_type", out var v) ? v?.ToString() ?? "" : "";
@@ -187,17 +267,13 @@ try
                     _ => $"cloudlib_{ct}",
                 };
 
-                // Look up metadata by namespace_uri (emitted by NodeSetParser on every doc)
                 var nsUri = doc.TryGetValue("namespace_uri", out var n) ? n?.ToString() ?? "" : "";
 
-                // Flag whether this namespace already exists in the crawled opcfoundation index
                 var inOpcfoundation = !string.IsNullOrEmpty(nsUri)
                     && opcfNamespaces.Contains(nsUri.TrimEnd('/'));
                 doc["in_opcfoundation_index"] = inOpcfoundation;
-                // Keep source=opcfoundation for specs that are also in the crawled index;
-                // only tag as cloudlib for specs that exist ONLY in the UA CloudLibrary.
                 doc["source"] = inOpcfoundation ? "opcfoundation" : "cloudlib";
-                doc["popularity"] = inOpcfoundation ? 1_000_000_000L : 0L; // default; overwritten below if metadata matches
+                doc["popularity"] = inOpcfoundation ? 1_000_000_000L : 0L;
 
                 if (string.IsNullOrEmpty(nsUri) || !metaByNs.TryGetValue(nsUri, out var meta))
                     continue;
@@ -211,21 +287,18 @@ try
                     doc["publication_date"] = meta.PublicationDate.Value;
             }
 
-            // Compute is_latest / version_rank across CloudLib versions of the same namespace
-            // Group by namespace_uri, order by publication_date desc, rank 1 = latest
+            // Compute is_latest / version_rank across CloudLib versions per namespace.
             var cloudByNs = cloudDocs
                 .Where(d => d.TryGetValue("namespace_uri", out var n) && !string.IsNullOrEmpty(n?.ToString()))
                 .GroupBy(d => d["namespace_uri"]?.ToString() ?? "");
 
             foreach (var group in cloudByNs)
             {
-                // Order by publication_date desc (null last)
                 var ordered = group
                     .OrderByDescending(d => d.TryGetValue("publication_date", out var p) && p is DateTimeOffset dto ? dto : DateTimeOffset.MinValue)
                     .ThenByDescending(d => d.TryGetValue("spec_version", out var v) ? v?.ToString() ?? "" : "")
                     .ToList();
 
-                // Assign rank per distinct spec_version within the namespace
                 int rank = 0;
                 string? prevVersion = null;
                 foreach (var d in ordered)
@@ -237,7 +310,6 @@ try
                 }
             }
 
-            // Generate summaries for CloudLibrary nodesets (already generated above before mutation)
             foreach (var doc in cloudSummaries)
             {
                 var ct = doc.TryGetValue("content_type", out var v) ? v?.ToString() ?? "" : "";
@@ -250,7 +322,6 @@ try
                     _ => $"cloudlib_{ct}",
                 };
 
-                // Enrich summary page_chunk with the CloudLib title + description if we have matching metadata
                 var spec = doc.TryGetValue("spec_part", out var sp) ? sp?.ToString() ?? "" : "";
                 var firstForSpec = cloudDocs
                     .FirstOrDefault(d => d.TryGetValue("spec_part", out var p) && p?.ToString() == spec
@@ -273,9 +344,8 @@ try
                     if (firstForSpec.TryGetValue("popularity", out var pop)) doc["popularity"] = pop!;
                     if (firstForSpec.TryGetValue("in_opcfoundation_index", out var inIdx)) doc["in_opcfoundation_index"] = inIdx!;
 
-                    // Prefix page_chunk with human-readable metadata so text search can find it
                     var existing = doc.TryGetValue("page_chunk", out var pc) ? pc?.ToString() ?? "" : "";
-                    var header = new System.Text.StringBuilder();
+                    var header = new StringBuilder();
                     if (!string.IsNullOrEmpty(title)) header.AppendLine($"Title: {title}");
                     if (!string.IsNullOrEmpty(nsUri)) header.AppendLine($"Namespace: {nsUri}");
                     if (!string.IsNullOrEmpty(version)) header.AppendLine($"Version: {version}");
@@ -289,15 +359,10 @@ try
                         header.AppendLine();
                     }
                     doc["page_chunk"] = header.ToString() + existing;
-                    // Mirror is_latest / version_rank from the representative doc
                     if (firstForSpec.TryGetValue("is_latest", out var il)) doc["is_latest"] = il!;
                     if (firstForSpec.TryGetValue("version_rank", out var vr)) doc["version_rank"] = vr!;
                 }
 
-                // Resolve source/popularity from the representative doc's namespace.
-                // If the namespace was also crawled from reference.opcfoundation.org, surface
-                // the summary as an opcfoundation spec so list_specs source=opcfoundation
-                // returns it. Falls back to cloudlib when firstForSpec is null or has no namespace.
                 var summaryNsUri = firstForSpec != null
                     && firstForSpec.TryGetValue("namespace_uri", out var nu)
                     ? nu?.ToString() ?? "" : "";
@@ -309,31 +374,15 @@ try
             }
 
             var allCloudDocs = cloudDocs.Concat(cloudSummaries).ToList();
-            log.LogInformation("[CLOUDLIB] Uploading {Count} docs to index", allCloudDocs.Count);
+            log.LogInformation("[CLOUDLIB] Uploading {Count} docs to {Index}",
+                allCloudDocs.Count, IndexNameV2);
 
-            int cloudUploaded = 0;
-            for (int i = 0; i < allCloudDocs.Count; i += 100)
-            {
-                var batch = allCloudDocs.Skip(i).Take(100).ToList();
-                try
-                {
-                    await RetryHelper.RetrySearchAsync(async () =>
-                    {
-                        await searchClient.IndexDocumentsAsync(IndexDocumentsBatch.Upload(batch));
-                        return true;
-                    }, log);
-                    cloudUploaded += batch.Count;
-                    if (cloudUploaded % 1000 == 0)
-                        log.LogInformation("[CLOUDLIB] Uploaded={N} Total={T}", cloudUploaded, allCloudDocs.Count);
-                }
-                catch (Exception ex)
-                {
-                    log.LogWarning("[CLOUDLIB] Phase=upload Error={Error} BatchStart={I}", ex.Message, i);
-                }
-            }
+            var cloudUploaded = await UploadBatchedAsync(
+                v2SearchClient, allCloudDocs, "CLOUDLIB", log);
 
-            log.LogInformation("[PIPELINE] Phase={Phase} Status={Status} Uploaded={U} Expected={E} Entries={N}",
-                "cloudlib", "completed", cloudUploaded, allCloudDocs.Count, cloudLibEntries.Count);
+            log.LogInformation(
+                "[PIPELINE] Phase=cloudlib Uploaded={U} Expected={E} Entries={N}",
+                cloudUploaded, allCloudDocs.Count, cloudLibEntries.Count);
             if (cloudUploaded < allCloudDocs.Count)
                 log.LogWarning("[CLOUDLIB] Upload shortfall: uploaded {Uploaded} of {Expected} docs",
                     cloudUploaded, allCloudDocs.Count);
@@ -342,11 +391,9 @@ try
         {
             log.LogWarning("[CLOUDLIB] No entries returned from CloudLibrary API — check credentials or API availability");
         }
-        await statusTracker.UpdateAsync("cloudlib", "completed");
-    }
 
-    await statusTracker.UpdateAsync("nodeset", "completed",
-        elapsedSec: (int)nodesetSw.Elapsed.TotalSeconds);
+        await EndPhaseAsync("cloudlib", phaseSw);
+    }
 
     log.LogInformation("[PIPELINE] Phase={Phase} Status={Status} TotalElapsedSec={Elapsed}",
         "pipeline", "completed", (int)sw.Elapsed.TotalSeconds);
@@ -362,6 +409,163 @@ catch (Exception ex)
 }
 
 return exitCode;
+
+// ── Local helpers ────────────────────────────────────────────────────
+
+async Task<Stopwatch> BeginPhaseAsync(string phaseName)
+{
+    log.LogInformation("[PIPELINE] Phase={Phase} Status={Status}", phaseName, "started");
+    await statusTracker.UpdateAsync(phaseName, "running");
+    return Stopwatch.StartNew();
+}
+
+async Task EndPhaseAsync(string phaseName, Stopwatch phaseSw)
+{
+    log.LogInformation("[PIPELINE] Phase={Phase} Status={Status} Duration={Sec}s",
+        phaseName, "completed", (int)phaseSw.Elapsed.TotalSeconds);
+    await statusTracker.UpdateAsync(phaseName, "completed",
+        elapsedSec: (int)phaseSw.Elapsed.TotalSeconds);
+}
+
+static async Task<HashSet<string>> ExtractImageShasAsync(BlobServiceClient blobs, ILogger log)
+{
+    // Light regex sweep over html/*.html blobs — cheap and avoids loading
+    // the full DOM just to enumerate figure references.
+    var container = blobs.GetBlobContainerClient("opcua-content");
+    var rx = new Regex(@"/img/([a-f0-9]{64})\.png",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    var shas = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    var scanned = 0;
+    await foreach (var item in container.GetBlobsAsync(
+        BlobTraits.None, BlobStates.None, prefix: "html/", cancellationToken: default))
+    {
+        if (!item.Name.EndsWith(".html", StringComparison.OrdinalIgnoreCase))
+            continue;
+
+        try
+        {
+            var dl = await container.GetBlobClient(item.Name).DownloadContentAsync();
+            var html = dl.Value.Content.ToString();
+            foreach (Match m in rx.Matches(html))
+                shas.Add(m.Groups[1].Value.ToLowerInvariant());
+        }
+        catch (Exception ex)
+        {
+            log.LogWarning("[IMAGE_FETCH] Blob={Blob} ScanError={Error}",
+                item.Name, ex.Message);
+        }
+
+        scanned++;
+        if (scanned % 50 == 0)
+            log.LogInformation("[IMAGE_FETCH] Scanned={N} ShasFound={S}", scanned, shas.Count);
+    }
+
+    log.LogInformation("[IMAGE_FETCH] Scan complete: HtmlBlobs={N} UniqueShas={S}",
+        scanned, shas.Count);
+    return shas;
+}
+
+static async Task<List<GitHubRef>> BuildGitHubRefsAsync(
+    List<SpecLanding> landings, BlobServiceClient blobs,
+    ILogger stsLog, ILogger pipelineLog)
+{
+    // Build the de-duped (owner, repo, tag, pathFilter) set from two signals:
+    //   • Landing-page Supplementary Files — authoritative (owner/repo/tag/path)
+    //   • STS XML opc:gitHubTag custom-meta — supplemental tag pinning, mapped
+    //     to OPCFoundation/UA-Nodeset (the canonical home for OPC-published
+    //     nodesets) with an empty path filter to mirror the whole tree.
+    var seen = new HashSet<(string Owner, string Repo, string Tag, string Path)>();
+    var refs = new List<GitHubRef>();
+
+    void Add(string owner, string repo, string tag, string pathFilter)
+    {
+        if (string.IsNullOrEmpty(owner) || string.IsNullOrEmpty(repo) || string.IsNullOrEmpty(tag))
+            return;
+        var key = (owner, repo, tag, pathFilter ?? "");
+        if (seen.Add(key))
+            refs.Add(new GitHubRef(owner, repo, tag, pathFilter ?? ""));
+    }
+
+    // 1. Supplementary Files from landings
+    foreach (var landing in landings)
+    {
+        foreach (var sup in landing.SupplementaryFiles)
+        {
+            var slash = sup.Repo.IndexOf('/');
+            if (slash <= 0 || slash >= sup.Repo.Length - 1) continue;
+            var owner = sup.Repo[..slash];
+            var repo = sup.Repo[(slash + 1)..];
+            Add(owner, repo, sup.Tag, sup.Path);
+        }
+    }
+
+    // 2. STS XML opc:gitHubTag — parse every sts-xml/*.xml blob downloaded
+    //    in the spec_download phase. Map to OPCFoundation/UA-Nodeset.
+    var container = blobs.GetBlobContainerClient("opcua-content");
+    var parser = new StsMetadataParser(stsLog);
+    var parsedStsCount = 0;
+    var taggedCount = 0;
+    await foreach (var item in container.GetBlobsAsync(
+        BlobTraits.None, BlobStates.None, prefix: "sts-xml/", cancellationToken: default))
+    {
+        if (!item.Name.EndsWith(".xml", StringComparison.OrdinalIgnoreCase)) continue;
+        try
+        {
+            var dl = await container.GetBlobClient(item.Name).DownloadContentAsync();
+            var xml = dl.Value.Content.ToString();
+            var meta = parser.Parse(xml);
+            parsedStsCount++;
+            if (!string.IsNullOrEmpty(meta.GitHubTag))
+            {
+                Add("OPCFoundation", "UA-Nodeset", meta.GitHubTag, "");
+                taggedCount++;
+            }
+        }
+        catch (Exception ex)
+        {
+            pipelineLog.LogWarning("[GITHUB_FETCH] StsParseError Blob={Blob} Error={Error}",
+                item.Name, ex.Message);
+        }
+    }
+    pipelineLog.LogInformation(
+        "[GITHUB_FETCH] StsXmlParsed={P} StsWithGitHubTag={T} TotalRefs={R}",
+        parsedStsCount, taggedCount, refs.Count);
+
+    return refs;
+}
+
+static async Task<int> UploadBatchedAsync(
+    SearchClient searchClient,
+    List<SearchDocument> docs,
+    string logTag,
+    ILogger log)
+{
+    var uploaded = 0;
+    const int batchSize = 100;
+    for (var i = 0; i < docs.Count; i += batchSize)
+    {
+        var batch = docs.Skip(i).Take(batchSize).ToList();
+        try
+        {
+            await RetryHelper.RetrySearchAsync(async () =>
+            {
+                await searchClient.IndexDocumentsAsync(IndexDocumentsBatch.Upload(batch));
+                return true;
+            }, log);
+            uploaded += batch.Count;
+            if (uploaded % 1000 == 0)
+                log.LogInformation("[{Tag}] Uploaded={N} Total={T}",
+                    logTag, uploaded, docs.Count);
+        }
+        catch (Exception ex)
+        {
+            log.LogWarning("[{Tag}] Phase=upload Error={Error} BatchStart={I}",
+                logTag, ex.Message, i);
+        }
+    }
+    return uploaded;
+}
 
 string Require(string name) =>
     Environment.GetEnvironmentVariable(name)
@@ -439,701 +643,6 @@ sealed class PipelineStatus
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// Crawler
-// ═══════════════════════════════════════════════════════════════════════
-
-sealed class OpcUaCrawler : IDisposable
-{
-    const string BaseUrl = "https://reference.opcfoundation.org/";
-    const string PrimaryHost = "reference.opcfoundation.org";
-    const string FullCrawlHost = "profiles.opcfoundation.org";
-    const string AllowedDomain = ".opcfoundation.org";
-    const string ContainerName = "opcua-content";
-    const string CrawlStateBlob = "_crawl-state.json";
-    const int MaxConcurrency = 5;
-    const int DelayMs = 200;
-    const int RecrawlHours = 24;
-
-    static readonly JsonSerializerOptions s_json = new() { WriteIndented = true };
-    static readonly HashSet<string> s_imgExts = new(StringComparer.OrdinalIgnoreCase)
-        { ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico" };
-
-    readonly BlobContainerClient _container;
-    readonly HttpClient _http;
-    readonly SemaphoreSlim _throttle = new(MaxConcurrency);
-    readonly ConcurrentDictionary<string, byte> _queued = new(StringComparer.OrdinalIgnoreCase);
-    readonly ILogger _log;
-    readonly PipelineStatusTracker _tracker;
-    Dictionary<string, DateTimeOffset> _crawled = new(StringComparer.OrdinalIgnoreCase);
-    int _downloaded, _skipped, _errors;
-
-    public OpcUaCrawler(string connectionString, ILogger logger, PipelineStatusTracker tracker)
-    {
-        _log = logger;
-        _tracker = tracker;
-        _container = new BlobContainerClient(connectionString, ContainerName);
-        var handler = new SocketsHttpHandler
-        {
-            MaxConnectionsPerServer = MaxConcurrency,
-            PooledConnectionLifetime = TimeSpan.FromMinutes(10),
-            AutomaticDecompression = System.Net.DecompressionMethods.All
-        };
-        _http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(60) };
-        _http.DefaultRequestHeaders.UserAgent.ParseAdd("OpcUaKb-Crawler/1.0");
-        _http.DefaultRequestHeaders.Accept.ParseAdd("text/html,application/xhtml+xml,*/*;q=0.8");
-    }
-
-    public async Task RunAsync()
-    {
-        await _container.CreateIfNotExistsAsync();
-        await LoadStateAsync();
-        _log.LogInformation("Crawl state: {Count} previously crawled URLs", _crawled.Count);
-
-        var queue = new ConcurrentQueue<(string url, bool isPage, bool followLinks)>();
-        Enqueue(queue, BaseUrl, true, true);
-
-        // Process the main page synchronously up front so that ExtractLinks has
-        // populated the queue (and _queued) with per-spec version URLs before we
-        // probe older versions below.
-        if (queue.TryDequeue(out var seed))
-            await ProcessAsync(seed.url, seed.isPage, seed.followLinks, queue);
-
-        // The main page only links each spec's latest few versions, so older
-        // versions (e.g., DI v101) are unreachable via normal link-following.
-        // HEAD-probe them explicitly and enqueue any that exist.
-        await ProbeOlderVersionsAsync(queue);
-
-        while (!queue.IsEmpty)
-        {
-            var batch = new List<(string url, bool isPage, bool followLinks)>();
-            while (batch.Count < MaxConcurrency * 2 && queue.TryDequeue(out var item))
-                batch.Add(item);
-
-            await Task.WhenAll(batch.Select(item => ProcessAsync(item.url, item.isPage, item.followLinks, queue)));
-
-            if (_downloaded > 0 && _downloaded % 50 == 0)
-                await SaveStateAsync();
-        }
-
-        await SaveStateAsync();
-        _log.LogInformation("[CRAWL] Status=completed Downloaded={D} Skipped={S} Errors={E}",
-            _downloaded, _skipped, _errors);
-        await _tracker.UpdateAsync("crawl", "completed",
-            downloaded: _downloaded, skipped: _skipped, errors: _errors, queued: 0);
-    }
-
-    // Per-spec version probing: derive (spec, latestVersion) tuples from URLs
-    // already discovered on the main page, then HEAD-probe v100..(latest-1) for
-    // each spec. Capped at 20 versions per spec to keep this bounded. Successful
-    // probes are enqueued for normal page-crawling so they get indexed.
-    async Task ProbeOlderVersionsAsync(ConcurrentQueue<(string, bool, bool)> queue)
-    {
-        var rx = new Regex(
-            @"https?://reference\.opcfoundation\.org/(?<spec>[^/]+(?:/[^/]+)?)/v(?<ver>\d{3,4})[a-z]?/",
-            RegexOptions.IgnoreCase | RegexOptions.Compiled);
-        var bySpec = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        foreach (var url in _queued.Keys)
-        {
-            var m = rx.Match(url);
-            if (!m.Success) continue;
-            var spec = m.Groups["spec"].Value;
-            if (int.TryParse(m.Groups["ver"].Value, out var v))
-            {
-                if (!bySpec.TryGetValue(spec, out var cur) || v > cur)
-                    bySpec[spec] = v;
-            }
-        }
-
-        _log.LogInformation("[CRAWL] Status=probe_older_start Specs={N}", bySpec.Count);
-        var discovered = 0;
-        var probeTasks = new List<Task>();
-        foreach (var (spec, latest) in bySpec)
-        {
-            // Cap at 20 attempts per spec, never probe below v100.
-            var floor = Math.Max(100, latest - 20);
-            for (var v = floor; v < latest; v++)
-            {
-                var probeUrl = $"https://reference.opcfoundation.org/{spec}/v{v:D3}/docs/";
-                probeTasks.Add(ProbeOneAsync(probeUrl, queue, () => Interlocked.Increment(ref discovered)));
-            }
-        }
-        await Task.WhenAll(probeTasks);
-        _log.LogInformation("[CRAWL] Status=probe_older_done Discovered={N}", discovered);
-    }
-
-    async Task ProbeOneAsync(string url, ConcurrentQueue<(string, bool, bool)> queue, Action onSuccess)
-    {
-        await _throttle.WaitAsync();
-        try
-        {
-            await Task.Delay(50);
-            using var head = new HttpRequestMessage(HttpMethod.Head, url);
-            using var resp = await _http.SendAsync(head);
-            if (resp.IsSuccessStatusCode)
-            {
-                _log.LogInformation("[CRAWL] Discovered older version: {Url}", url);
-                Enqueue(queue, url, true, true);
-                onSuccess();
-            }
-        }
-        catch { /* probe-only, ignore */ }
-        finally { _throttle.Release(); }
-    }
-
-    async Task ProcessAsync(string url, bool isPage, bool followLinks, ConcurrentQueue<(string, bool, bool)> queue)
-    {
-        await _throttle.WaitAsync();
-        try
-        {
-            if (_crawled.TryGetValue(url, out var last) &&
-                DateTimeOffset.UtcNow - last < TimeSpan.FromHours(RecrawlHours))
-            {
-                Interlocked.Increment(ref _skipped);
-                return;
-            }
-
-            await Task.Delay(DelayMs);
-            var response = await RetryHelper.RetryAsync(() => _http.GetAsync(url), _log);
-            if (!response.IsSuccessStatusCode)
-            {
-                _log.LogWarning("HTTP {Code} for {Url}", (int)response.StatusCode, url);
-                Interlocked.Increment(ref _errors);
-                return;
-            }
-
-            var bytes = await response.Content.ReadAsByteArrayAsync();
-            var blobName = UrlToBlobName(url, response.Content.Headers.ContentType?.MediaType);
-            var blobClient = _container.GetBlobClient(blobName);
-            using var ms = new MemoryStream(bytes);
-            await blobClient.UploadAsync(ms, new BlobUploadOptions
-            {
-                HttpHeaders = new BlobHttpHeaders
-                {
-                    ContentType = response.Content.Headers.ContentType?.ToString() ?? "application/octet-stream"
-                }
-            });
-
-            _crawled[url] = DateTimeOffset.UtcNow;
-            Interlocked.Increment(ref _downloaded);
-
-            if (isPage && followLinks && (response.Content.Headers.ContentType?.MediaType?.Contains("html") == true))
-            {
-                var html = Encoding.UTF8.GetString(bytes);
-                ExtractLinks(html, url, queue);
-            }
-
-            if (_downloaded % 25 == 0)
-            {
-                _log.LogInformation("[CRAWL] Downloaded={D} Skipped={S} Errors={E} Queued={Q}",
-                    _downloaded, _skipped, _errors, queue.Count);
-                if (_downloaded % 100 == 0)
-                    await _tracker.UpdateAsync("crawl", "running",
-                        downloaded: _downloaded, skipped: _skipped,
-                        errors: _errors, queued: queue.Count);
-            }
-        }
-        catch (Exception ex)
-        {
-            _log.LogWarning("[CRAWL] Error={Error} Url={Url}", ex.Message, url);
-            Interlocked.Increment(ref _errors);
-        }
-        finally
-        {
-            _throttle.Release();
-        }
-    }
-
-    void ExtractLinks(string html, string baseUrl, ConcurrentQueue<(string, bool, bool)> queue)
-    {
-        try
-        {
-            var parser = new HtmlParser();
-            var doc = parser.ParseDocument(html);
-            var baseUri = new Uri(baseUrl);
-
-            foreach (var a in doc.QuerySelectorAll("a[href]"))
-            {
-                var href = a.GetAttribute("href");
-                if (string.IsNullOrWhiteSpace(href) || href.StartsWith('#') || href.StartsWith("javascript:"))
-                    continue;
-                if (Uri.TryCreate(baseUri, href, out var resolved) &&
-                    IsAllowedDomain(resolved.Host))
-                    Enqueue(queue, resolved.GetLeftPart(UriPartial.Path), true, ShouldFollowLinks(resolved.Host));
-            }
-
-            foreach (var img in doc.QuerySelectorAll("img[src], link[href], script[src]"))
-            {
-                var src = img.GetAttribute("src") ?? img.GetAttribute("href");
-                if (string.IsNullOrWhiteSpace(src)) continue;
-                if (Uri.TryCreate(baseUri, src, out var resolved) &&
-                    IsAllowedDomain(resolved.Host))
-                    Enqueue(queue, resolved.GetLeftPart(UriPartial.Query), false, false);
-            }
-        }
-        catch { /* non-fatal */ }
-    }
-
-    static bool IsAllowedDomain(string host) =>
-        host.EndsWith(AllowedDomain, StringComparison.OrdinalIgnoreCase) ||
-        host.Equals("opcfoundation.org", StringComparison.OrdinalIgnoreCase);
-
-    // Full crawl (follow links) for primary + profiles; depth-1 only for other subdomains
-    static bool ShouldFollowLinks(string host) =>
-        host.Equals(PrimaryHost, StringComparison.OrdinalIgnoreCase) ||
-        host.Equals(FullCrawlHost, StringComparison.OrdinalIgnoreCase);
-
-    void Enqueue(ConcurrentQueue<(string, bool, bool)> queue, string url, bool isPage, bool followLinks)
-    {
-        if (_queued.TryAdd(url, 0))
-            queue.Enqueue((url, isPage, followLinks));
-    }
-
-    static string UrlToBlobName(string url, string? contentType)
-    {
-        var uri = new Uri(url);
-        // Prefix with host for non-reference domains to avoid path collisions
-        var prefix = uri.Host.Equals("reference.opcfoundation.org", StringComparison.OrdinalIgnoreCase)
-            ? "" : uri.Host.Replace(".", "_") + "/";
-        var path = uri.AbsolutePath.TrimStart('/');
-        if (string.IsNullOrEmpty(path) || path.EndsWith('/'))
-            path += "index.html";
-        // Append .xml for API nodeset endpoints that serve XML
-        if (contentType?.Contains("xml") == true && !path.EndsWith(".xml", StringComparison.OrdinalIgnoreCase))
-            path += ".xml";
-        // NOTE: We previously appended ".html" for HTML responses on URLs without
-        // a filename extension (e.g., /DI/v102/docs/1 -> /DI/v102/docs/1.html).
-        // That was needed when the indexer filtered blobs by name suffix only.
-        // The indexer now accepts blobs by text/html Content-Type as well, so
-        // the append is redundant — and harmful, because it created duplicate
-        // blobs alongside extensionless blobs from earlier crawls (and produced
-        // 404-ing citation URLs of the form .../5.6.html).
-        return prefix + path;
-    }
-
-    async Task LoadStateAsync()
-    {
-        try
-        {
-            var blob = _container.GetBlobClient(CrawlStateBlob);
-            if (await blob.ExistsAsync())
-            {
-                var dl = await blob.DownloadContentAsync();
-                var state = dl.Value.Content.ToObjectFromJson<Dictionary<string, DateTimeOffset>>(s_json);
-                if (state != null) _crawled = new Dictionary<string, DateTimeOffset>(state, StringComparer.OrdinalIgnoreCase);
-            }
-        }
-        catch (Exception ex) { _log.LogWarning("Could not load crawl state: {Msg}", ex.Message); }
-    }
-
-    async Task SaveStateAsync()
-    {
-        try
-        {
-            var blob = _container.GetBlobClient(CrawlStateBlob);
-            var json = JsonSerializer.SerializeToUtf8Bytes(_crawled, s_json);
-            using var ms = new MemoryStream(json);
-            await blob.UploadAsync(ms, overwrite: true);
-        }
-        catch (Exception ex) { _log.LogWarning("Could not save crawl state: {Msg}", ex.Message); }
-    }
-
-    public void Dispose() => _http.Dispose();
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// Indexer
-// ═══════════════════════════════════════════════════════════════════════
-
-sealed class OpcUaIndexer
-{
-    const string IndexName = "opcua-content-index";
-    const string ContainerName = "opcua-content";
-    const string EmbeddingDeployment = "text-embedding-3-large";
-    const int EmbeddingDimensions = 3072;
-    const int ChunkSize = 512;
-    const int ChunkOverlap = 50;
-    const int EmbeddingBatchSize = 16;
-    const int UploadBatchSize = 100;
-
-    readonly SearchIndexClient _indexClient;
-    readonly SearchClient _searchClient;
-    readonly BlobContainerClient _container;
-    readonly HttpClient _http;
-    readonly TokenCredential _credential;
-    readonly string _aoaiEndpoint;
-    readonly string _storageConn;
-    readonly ILogger _log;
-    readonly PipelineStatusTracker _tracker;
-    VersionCatalog _versionCatalog = null!;
-
-    public OpcUaIndexer(string storageConn, string searchEndpoint, string searchApiKey,
-        string aoaiEndpoint, TokenCredential credential, ILogger logger, PipelineStatusTracker tracker)
-    {
-        _log = logger;
-        _tracker = tracker;
-        _aoaiEndpoint = aoaiEndpoint;
-        _storageConn = storageConn;
-        _credential = credential;
-        _indexClient = new SearchIndexClient(new Uri(searchEndpoint), new AzureKeyCredential(searchApiKey));
-        _searchClient = _indexClient.GetSearchClient(IndexName);
-        _container = new BlobContainerClient(storageConn, ContainerName);
-        _http = new HttpClient();
-    }
-
-    public async Task RunAsync()
-    {
-        await EnsureIndexAsync();
-        _log.LogInformation("[INDEX] Status=index_ready Index={Name}", IndexName);
-
-        // Build version catalog from crawled main page
-        _versionCatalog = await VersionCatalog.BuildFromCrawledPageAsync(_storageConn, _log);
-
-        var htmlBlobs = new List<string>();
-        await foreach (var item in _container.GetBlobsAsync())
-        {
-            // Defense-in-depth pairing with the crawler's UrlToBlobName fix:
-            // accept blobs by either the .html name suffix or a text/html
-            // Content-Type. This ensures previously crawled blobs that were
-            // saved without an .html extension (e.g., /DI/v102/docs/1) still
-            // get indexed.
-            var ct = item.Properties?.ContentType ?? "";
-            if (item.Name.EndsWith(".html", StringComparison.OrdinalIgnoreCase)
-                || ct.StartsWith("text/html", StringComparison.OrdinalIgnoreCase))
-            {
-                htmlBlobs.Add(item.Name);
-            }
-        }
-        // Dedupe blobs that exist in BOTH extensionless and .html-suffixed forms
-        // (created by older crawler runs that appended .html for HTML responses
-        // without a filename extension). The two map to the same source_url after
-        // BlobNameToSourceUrl normalization, so indexing both wastes embedding
-        // quota and double-counts chunks. Prefer the extensionless form.
-        var extensionless = new HashSet<string>(
-            htmlBlobs.Where(n => !n.EndsWith(".html", StringComparison.OrdinalIgnoreCase)),
-            StringComparer.OrdinalIgnoreCase);
-        var dedupedHtml = htmlBlobs.Where(n =>
-        {
-            if (!n.EndsWith(".html", StringComparison.OrdinalIgnoreCase)) return true;
-            if (n.EndsWith("/index.html", StringComparison.OrdinalIgnoreCase)) return true; // /index.html is a distinct form
-            var stripped = n[..^".html".Length];
-            return !extensionless.Contains(stripped);
-        }).ToList();
-        if (dedupedHtml.Count != htmlBlobs.Count)
-            _log.LogInformation("[INDEX] Deduped {Removed} duplicate .html blobs (had extensionless variants)",
-                htmlBlobs.Count - dedupedHtml.Count);
-        htmlBlobs = dedupedHtml;
-        _log.LogInformation("[INDEX] HtmlBlobs={Count}", htmlBlobs.Count);
-        await _tracker.UpdateAsync("index", "running", htmlBlobs: htmlBlobs.Count);
-        if (htmlBlobs.Count == 0) return;
-
-        var allDocs = new List<SearchDocument>();
-        var parser = new HtmlParser();
-        int processed = 0;
-
-        foreach (var blobName in htmlBlobs)
-        {
-            processed++;
-            try
-            {
-                var dl = await _container.GetBlobClient(blobName).DownloadContentAsync();
-                var html = dl.Value.Content.ToString();
-                var sourceUrl = BlobNameToSourceUrl(blobName);
-                var (part, ver) = ExtractSpecInfo(blobName);
-                var versionEntry = _versionCatalog.Lookup(blobName);
-                var doc = await parser.ParseDocumentAsync(html);
-                allDocs.AddRange(ChunkDocument(doc, part, ver, sourceUrl,
-                    versionEntry?.IsLatest ?? true, versionEntry?.Rank ?? 1));
-
-                if (processed % 50 == 0)
-                {
-                    _log.LogInformation("[INDEX] Phase=chunking Parsed={N} Total={T} Chunks={C}",
-                        processed, htmlBlobs.Count, allDocs.Count);
-                    await _tracker.UpdateAsync("index", "running",
-                        htmlBlobs: htmlBlobs.Count, chunks: allDocs.Count);
-                }
-            }
-            catch (Exception ex)
-            {
-                _log.LogWarning("[INDEX] Phase=chunking Error={Error} Blob={Blob}", ex.Message, blobName);
-            }
-        }
-        _log.LogInformation("[INDEX] Phase=chunking Status=completed Chunks={Count}", allDocs.Count);
-        await _tracker.UpdateAsync("index", "running", chunks: allDocs.Count);
-
-        // Embeddings
-        _log.LogInformation("[INDEX] Phase=embedding Total={Count}", allDocs.Count);
-        var sem = new SemaphoreSlim(2);
-        int embDone = 0;
-        for (int i = 0; i < allDocs.Count; i += EmbeddingBatchSize)
-        {
-            var batch = allDocs.Skip(i).Take(EmbeddingBatchSize).ToList();
-            await sem.WaitAsync();
-            try
-            {
-                var texts = batch.Select(d => (string)d["page_chunk"]).ToList();
-                var vectors = await GetEmbeddingsAsync(texts);
-                for (int j = 0; j < batch.Count && j < vectors.Count; j++)
-                    batch[j]["page_chunk_vector"] = vectors[j];
-                embDone += batch.Count;
-                if (embDone % 100 == 0)
-                {
-                    _log.LogInformation("[INDEX] Phase=embedding Embedded={N} Total={T}", embDone, allDocs.Count);
-                    await _tracker.UpdateAsync("index", "running", embedded: embDone);
-                }
-            }
-            catch (Exception ex)
-            {
-                _log.LogWarning("[INDEX] Phase=embedding Error={Error} BatchStart={I}", ex.Message, i);
-            }
-            finally { sem.Release(); }
-        }
-        _log.LogInformation("[INDEX] Phase=embedding Status=completed Embedded={N}", embDone);
-        await _tracker.UpdateAsync("index", "running", embedded: embDone);
-
-        // Upload
-        _log.LogInformation("[INDEX] Phase=upload Total={Count}", allDocs.Count);
-        int uploaded = 0;
-        for (int i = 0; i < allDocs.Count; i += UploadBatchSize)
-        {
-            var batch = allDocs.Skip(i).Take(UploadBatchSize).ToList();
-            try
-            {
-                await RetryHelper.RetrySearchAsync(
-                    () => _searchClient.IndexDocumentsAsync(IndexDocumentsBatch.Upload(batch)), _log);
-                uploaded += batch.Count;
-                if (uploaded % 500 == 0)
-                {
-                    _log.LogInformation("[INDEX] Phase=upload Uploaded={N} Total={T}", uploaded, allDocs.Count);
-                    await _tracker.UpdateAsync("index", "running", indexed: uploaded);
-                }
-            }
-            catch (Exception ex)
-            {
-                _log.LogWarning("[INDEX] Phase=upload Error={Error} BatchStart={I}", ex.Message, i);
-            }
-        }
-        _log.LogInformation("[INDEX] Phase=upload Status=completed Indexed={N}", uploaded);
-        await _tracker.UpdateAsync("index", "completed", indexed: uploaded);
-    }
-
-    async Task EnsureIndexAsync()
-    {
-        var index = new SearchIndex(IndexName)
-        {
-            Description = "OPC UA reference specification content chunks with vector embeddings.",
-            Fields =
-            {
-                new SimpleField("id", SearchFieldDataType.String) { IsKey = true, IsFilterable = true },
-                new SearchableField("page_chunk") { AnalyzerName = LexicalAnalyzerName.EnMicrosoft },
-                new SearchField("page_chunk_vector", SearchFieldDataType.Collection(SearchFieldDataType.Single))
-                {
-                    IsSearchable = true, VectorSearchDimensions = EmbeddingDimensions, VectorSearchProfileName = "hnsw-embedding"
-                },
-                new SimpleField("source_url", SearchFieldDataType.String) { IsFilterable = true },
-                new SimpleField("spec_part", SearchFieldDataType.String) { IsFilterable = true, IsFacetable = true },
-                new SimpleField("spec_version", SearchFieldDataType.String) { IsFilterable = true },
-                new SearchableField("section_title"),
-                new SimpleField("content_type", SearchFieldDataType.String) { IsFilterable = true },
-                new SimpleField("chunk_index", SearchFieldDataType.Int32) { IsSortable = true },
-                new SimpleField("node_class", SearchFieldDataType.String) { IsFilterable = true, IsFacetable = true },
-                new SimpleField("modelling_rule", SearchFieldDataType.String) { IsFilterable = true, IsFacetable = true },
-                new SimpleField("browse_name", SearchFieldDataType.String) { IsFilterable = true },
-                new SimpleField("parent_type", SearchFieldDataType.String) { IsFilterable = true },
-                new SimpleField("data_type", SearchFieldDataType.String) { IsFilterable = true, IsFacetable = true },
-                new SimpleField("is_latest", SearchFieldDataType.Boolean) { IsFilterable = true },
-                new SimpleField("version_rank", SearchFieldDataType.Int32) { IsFilterable = true, IsSortable = true },
-                new SimpleField("source", SearchFieldDataType.String) { IsFilterable = true, IsFacetable = true },
-                new SimpleField("namespace_uri", SearchFieldDataType.String) { IsFilterable = true },
-                new SimpleField("publication_date", SearchFieldDataType.DateTimeOffset) { IsFilterable = true, IsSortable = true },
-                new SearchableField("title"),
-                new SearchableField("description") { AnalyzerName = LexicalAnalyzerName.EnMicrosoft },
-                new SimpleField("popularity", SearchFieldDataType.Int64) { IsFilterable = true, IsSortable = true },
-                new SimpleField("in_opcfoundation_index", SearchFieldDataType.Boolean) { IsFilterable = true, IsFacetable = true },
-            },
-            ScoringProfiles =
-            {
-                new ScoringProfile("popularity_boost")
-                {
-                    Functions =
-                    {
-                        new MagnitudeScoringFunction("popularity", 5.0,
-                            new MagnitudeScoringParameters(1, 1_000_000) { ShouldBoostBeyondRangeByConstant = true })
-                        { Interpolation = ScoringFunctionInterpolation.Logarithmic }
-                    }
-                }
-            },
-            DefaultScoringProfile = "popularity_boost",
-            SemanticSearch = new SemanticSearch
-            {
-                DefaultConfigurationName = "semantic_config",
-                Configurations =
-                {
-                    new SemanticConfiguration("semantic_config", new SemanticPrioritizedFields
-                    {
-                        TitleField = new SemanticField("section_title"),
-                        ContentFields = { new SemanticField("page_chunk"), new SemanticField("description") },
-                        KeywordsFields = { new SemanticField("title") }
-                    })
-                }
-            },
-            VectorSearch = new VectorSearch
-            {
-                Algorithms = { new HnswAlgorithmConfiguration("alg") { Parameters = new HnswParameters { Metric = VectorSearchAlgorithmMetric.Cosine } } },
-                Profiles = { new VectorSearchProfile("hnsw-embedding", "alg") { VectorizerName = "aoai-vectorizer" } },
-                Vectorizers =
-                {
-                    new AzureOpenAIVectorizer("aoai-vectorizer")
-                    {
-                        Parameters = new AzureOpenAIVectorizerParameters
-                        {
-                            ResourceUri = new Uri(_aoaiEndpoint),
-                            DeploymentName = EmbeddingDeployment,
-                            ModelName = EmbeddingDeployment
-                        }
-                    }
-                }
-            }
-        };
-        await _indexClient.CreateOrUpdateIndexAsync(index);
-    }
-
-    List<SearchDocument> ChunkDocument(AngleSharp.Dom.IDocument doc, string specPart, string specVersion,
-        string sourceUrl, bool isLatest, int versionRank)
-    {
-        var results = new List<SearchDocument>();
-        var body = doc.Body;
-        if (body == null) return results;
-
-        string currentHeading = doc.Title ?? specPart;
-        var blocks = new List<(string heading, string text, string type)>();
-
-        foreach (var el in body.QuerySelectorAll("h1,h2,h3,h4,h5,h6,p,pre,code,li,td,th,figcaption,dt,dd"))
-        {
-            var tag = el.TagName.ToLowerInvariant();
-            if (tag.StartsWith('h') && tag.Length == 2) { currentHeading = el.TextContent.Trim(); continue; }
-            var text = el.TextContent.Trim();
-            if (text.Length < 10) continue;
-            blocks.Add((currentHeading, text, tag is "td" or "th" ? "table" : "text"));
-        }
-
-        foreach (var table in body.QuerySelectorAll("table"))
-        {
-            var heading = table.PreviousElementSibling?.TagName.StartsWith("H") == true
-                ? table.PreviousElementSibling.TextContent.Trim() : currentHeading;
-            var md = TableToMarkdown(table);
-            if (md.Length > 20) blocks.Add((heading, md, "table"));
-        }
-
-        foreach (var img in body.QuerySelectorAll("img[src]"))
-        {
-            var alt = img.GetAttribute("alt") ?? "";
-            var src = img.GetAttribute("src") ?? "";
-            var cap = img.Closest("figure")?.QuerySelector("figcaption")?.TextContent ?? "";
-            var ctx = $"[Image: {alt}] {cap} (src: {src})";
-            if (ctx.Length > 20) blocks.Add((currentHeading, ctx, "image"));
-        }
-
-        int chunkIdx = 0;
-        var buf = new StringBuilder();
-        string bufHeading = currentHeading, bufType = "text";
-
-        foreach (var (heading, text, type) in blocks)
-        {
-            if (buf.Length / 4 + text.Length / 4 > ChunkSize && buf.Length > 0)
-            {
-                results.Add(MakeDoc(buf.ToString(), bufHeading, bufType, sourceUrl, specPart, specVersion, chunkIdx++, isLatest, versionRank));
-                var words = buf.ToString().Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                buf.Clear();
-                if (words.Length > ChunkOverlap)
-                    buf.Append(string.Join(' ', words[^ChunkOverlap..]));
-            }
-            bufHeading = heading; bufType = type;
-            if (buf.Length > 0) buf.Append('\n');
-            buf.Append(text);
-        }
-        if (buf.Length > 0)
-            results.Add(MakeDoc(buf.ToString(), bufHeading, bufType, sourceUrl, specPart, specVersion, chunkIdx, isLatest, versionRank));
-
-        return results;
-    }
-
-    static SearchDocument MakeDoc(string text, string heading, string contentType,
-        string sourceUrl, string specPart, string specVersion, int chunkIdx,
-        bool isLatest = true, int versionRank = 1)
-    {
-        var id = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes($"{sourceUrl}:{chunkIdx}")))[..32].ToLowerInvariant();
-        return new SearchDocument(new Dictionary<string, object>
-        {
-            ["id"] = id, ["page_chunk"] = text, ["source_url"] = sourceUrl,
-            ["spec_part"] = specPart, ["spec_version"] = specVersion,
-            ["section_title"] = heading, ["content_type"] = contentType, ["chunk_index"] = chunkIdx,
-            ["is_latest"] = isLatest, ["version_rank"] = versionRank,
-            ["source"] = "opcfoundation",
-            ["popularity"] = 1_000_000_000L,
-            ["in_opcfoundation_index"] = true,
-        });
-    }
-
-    async Task<List<float[]>> GetEmbeddingsAsync(List<string> texts)
-    {
-        var body = JsonSerializer.Serialize(new { input = texts, model = EmbeddingDeployment });
-        var resp = await RetryHelper.RetryAsync(
-            async () =>
-            {
-                var token = await _credential.GetTokenAsync(
-                    new TokenRequestContext(new[] { "https://cognitiveservices.azure.com/.default" }),
-                    default);
-                var clone = new HttpRequestMessage(HttpMethod.Post,
-                    $"{_aoaiEndpoint}/openai/deployments/{EmbeddingDeployment}/embeddings?api-version=2024-06-01")
-                { Content = new StringContent(body, Encoding.UTF8, "application/json") };
-                clone.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token.Token);
-                return await _http.SendAsync(clone);
-            }, _log);
-        resp.EnsureSuccessStatusCode();
-        var json = JsonNode.Parse(await resp.Content.ReadAsStringAsync())!;
-        return json["data"]!.AsArray()
-            .Select(d => d!["embedding"]!.AsArray().Select(v => v!.GetValue<float>()).ToArray())
-            .ToList();
-    }
-
-    static (string part, string version) ExtractSpecInfo(string blobName) =>
-        VersionCatalog.ExtractSpecInfoFromPath(blobName);
-
-    // Build a canonical reference.opcfoundation.org URL from a blob name,
-    // stripping artefacts the crawler adds (.html suffix on extensionless paths,
-    // index.html directory-default) so citations link to working pages.
-    //
-    // Examples:
-    //   Core/Part3/v105/docs/5.6           -> https://reference.opcfoundation.org/Core/Part3/v105/docs/5.6
-    //   Core/Part3/v105/docs/5.6.html      -> https://reference.opcfoundation.org/Core/Part3/v105/docs/5.6
-    //   v105/Core/docs/Part3/5.8.3/index.html
-    //                                      -> https://reference.opcfoundation.org/v105/Core/docs/Part3/5.8.3
-    //   DI/v104/docs/1                     -> https://reference.opcfoundation.org/DI/v104/docs/1
-    internal static string BlobNameToSourceUrl(string blobName)
-    {
-        var name = blobName.Replace('\\', '/');
-        if (name.EndsWith("/index.html", StringComparison.OrdinalIgnoreCase))
-            name = name[..^"/index.html".Length];
-        else if (name.Equals("index.html", StringComparison.OrdinalIgnoreCase))
-            name = "";
-        else if (name.EndsWith(".html", StringComparison.OrdinalIgnoreCase))
-            name = name[..^".html".Length];
-        return $"https://reference.opcfoundation.org/{name}";
-    }
-
-    static string TableToMarkdown(IElement table)
-    {
-        var sb = new StringBuilder();
-        foreach (var row in table.QuerySelectorAll("tr"))
-        {
-            var cells = row.QuerySelectorAll("th, td");
-            sb.AppendLine("| " + string.Join(" | ", cells.Select(c => c.TextContent.Trim().Replace("|", "\\|"))) + " |");
-        }
-        return sb.ToString();
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════
 // Retry Helper — exponential backoff for HTTP 429 / 503
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -1199,5 +708,134 @@ static class RetryHelper
                 await Task.Delay(delay);
             }
         }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// SearchIndexFactory — central schema definition for the opcua-content
+// indexes. Reused by SpecIndexer and the standalone OpcUaKb.Indexer tool;
+// keep in sync with OpcUaKb.Indexer/Program.cs.
+// ═══════════════════════════════════════════════════════════════════════
+
+static class SearchIndexFactory
+{
+    public const string EmbeddingDeployment = "text-embedding-3-large";
+    public const int EmbeddingDimensions = 3072;
+
+    public static SearchIndex Build(string indexName, string aoaiEndpoint) => new(indexName)
+    {
+        Description = "OPC UA reference specification content chunks with vector embeddings.",
+        Fields =
+        {
+            new SimpleField("id", SearchFieldDataType.String) { IsKey = true, IsFilterable = true },
+            new SearchableField("page_chunk") { AnalyzerName = LexicalAnalyzerName.EnMicrosoft },
+            new SearchField("page_chunk_vector", SearchFieldDataType.Collection(SearchFieldDataType.Single))
+            {
+                IsSearchable = true, VectorSearchDimensions = EmbeddingDimensions, VectorSearchProfileName = "hnsw-embedding"
+            },
+            new SimpleField("source_url", SearchFieldDataType.String) { IsFilterable = true },
+            new SimpleField("spec_part", SearchFieldDataType.String) { IsFilterable = true, IsFacetable = true },
+            new SimpleField("spec_version", SearchFieldDataType.String) { IsFilterable = true },
+            new SearchableField("section_title"),
+            new SimpleField("content_type", SearchFieldDataType.String) { IsFilterable = true },
+            new SimpleField("chunk_index", SearchFieldDataType.Int32) { IsSortable = true },
+            new SimpleField("node_class", SearchFieldDataType.String) { IsFilterable = true, IsFacetable = true },
+            new SimpleField("modelling_rule", SearchFieldDataType.String) { IsFilterable = true, IsFacetable = true },
+            new SimpleField("browse_name", SearchFieldDataType.String) { IsFilterable = true },
+            new SimpleField("parent_type", SearchFieldDataType.String) { IsFilterable = true },
+            new SimpleField("data_type", SearchFieldDataType.String) { IsFilterable = true, IsFacetable = true },
+            new SimpleField("is_latest", SearchFieldDataType.Boolean) { IsFilterable = true },
+            new SimpleField("version_rank", SearchFieldDataType.Int32) { IsFilterable = true, IsSortable = true },
+            new SimpleField("source", SearchFieldDataType.String) { IsFilterable = true, IsFacetable = true },
+            new SimpleField("namespace_uri", SearchFieldDataType.String) { IsFilterable = true },
+            new SimpleField("publication_date", SearchFieldDataType.DateTimeOffset) { IsFilterable = true, IsSortable = true },
+            new SearchableField("title"),
+            new SearchableField("description") { AnalyzerName = LexicalAnalyzerName.EnMicrosoft },
+            new SimpleField("popularity", SearchFieldDataType.Int64) { IsFilterable = true, IsSortable = true },
+            new SimpleField("in_opcfoundation_index", SearchFieldDataType.Boolean) { IsFilterable = true, IsFacetable = true },
+            new SimpleField("spec_id", SearchFieldDataType.String) { IsFilterable = true, IsFacetable = true },
+            new SearchableField("spec_title") { AnalyzerName = LexicalAnalyzerName.EnMicrosoft },
+            new SimpleField("section_id", SearchFieldDataType.String) { IsFilterable = true },
+            new SimpleField("section_number", SearchFieldDataType.String) { IsFilterable = true, IsSortable = true },
+            new SimpleField("section_path", SearchFieldDataType.String),
+            new SimpleField("breadcrumb", SearchFieldDataType.Collection(SearchFieldDataType.String)) { IsFilterable = true, IsFacetable = true },
+            new SimpleField("figures", SearchFieldDataType.Collection(SearchFieldDataType.String)) { IsFilterable = true },
+        },
+        ScoringProfiles =
+        {
+            new ScoringProfile("popularity_boost")
+            {
+                Functions =
+                {
+                    new MagnitudeScoringFunction("popularity", 5.0,
+                        new MagnitudeScoringParameters(1, 1_000_000) { ShouldBoostBeyondRangeByConstant = true })
+                    { Interpolation = ScoringFunctionInterpolation.Logarithmic }
+                }
+            }
+        },
+        DefaultScoringProfile = "popularity_boost",
+        SemanticSearch = new SemanticSearch
+        {
+            DefaultConfigurationName = "semantic_config",
+            Configurations =
+            {
+                new SemanticConfiguration("semantic_config", new SemanticPrioritizedFields
+                {
+                    TitleField = new SemanticField("section_title"),
+                    ContentFields = { new SemanticField("page_chunk"), new SemanticField("description") },
+                    KeywordsFields = { new SemanticField("title") }
+                })
+            }
+        },
+        VectorSearch = new VectorSearch
+        {
+            Algorithms = { new HnswAlgorithmConfiguration("alg") { Parameters = new HnswParameters { Metric = VectorSearchAlgorithmMetric.Cosine } } },
+            Profiles = { new VectorSearchProfile("hnsw-embedding", "alg") { VectorizerName = "aoai-vectorizer" } },
+            Vectorizers =
+            {
+                new AzureOpenAIVectorizer("aoai-vectorizer")
+                {
+                    Parameters = new AzureOpenAIVectorizerParameters
+                    {
+                        ResourceUri = new Uri(aoaiEndpoint),
+                        DeploymentName = EmbeddingDeployment,
+                        ModelName = EmbeddingDeployment
+                    }
+                }
+            }
+        }
+    };
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// EmbeddingClient — shared Azure OpenAI embeddings helper. Wraps the
+// /embeddings REST endpoint with bearer-token auth and retry on 429/503.
+// Reused by SpecIndexer and the standalone OpcUaKb.Indexer tool.
+// ═══════════════════════════════════════════════════════════════════════
+
+static class EmbeddingClient
+{
+    public static async Task<List<float[]>> GetEmbeddingsAsync(
+        HttpClient http, TokenCredential credential, string aoaiEndpoint,
+        string deployment, List<string> texts, ILogger log)
+    {
+        var body = JsonSerializer.Serialize(new { input = texts, model = deployment });
+        var resp = await RetryHelper.RetryAsync(
+            async () =>
+            {
+                var token = await credential.GetTokenAsync(
+                    new TokenRequestContext(new[] { "https://cognitiveservices.azure.com/.default" }),
+                    default);
+                var clone = new HttpRequestMessage(HttpMethod.Post,
+                    $"{aoaiEndpoint}/openai/deployments/{deployment}/embeddings?api-version=2024-06-01")
+                { Content = new StringContent(body, Encoding.UTF8, "application/json") };
+                clone.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token.Token);
+                return await http.SendAsync(clone);
+            }, log);
+        resp.EnsureSuccessStatusCode();
+        var json = JsonNode.Parse(await resp.Content.ReadAsStringAsync())!;
+        return json["data"]!.AsArray()
+            .Select(d => d!["embedding"]!.AsArray().Select(v => v!.GetValue<float>()).ToArray())
+            .ToList();
     }
 }

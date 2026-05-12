@@ -99,9 +99,9 @@ sealed class OpcUaNodeSetParser
         public string? ParentLocalNodeId { get; set; }
     }
 
-    public OpcUaNodeSetParser(string storageConnectionString, ILogger logger)
+    public OpcUaNodeSetParser(BlobServiceClient blobs, ILogger logger)
     {
-        _container = new BlobContainerClient(storageConnectionString, ContainerName);
+        _container = blobs.GetBlobContainerClient(ContainerName);
         _log = logger;
     }
 
@@ -119,21 +119,22 @@ sealed class OpcUaNodeSetParser
 
     public async Task<List<SearchDocument>> ParseAllAsync()
     {
-        // Phase 1: discover opcfoundation nodeset XML blobs
-        // CloudLib blobs are handled separately by the CloudLib phase — exclude them here
+        // Phase 1: discover opcfoundation nodeset XML blobs.
+        // Restrict to known nodeset prefixes to avoid pulling in unrelated
+        // .xml blobs that other pipeline phases write (e.g. sts-xml/*.xml
+        // from SpecDownloader). CloudLib blobs are handled separately.
+        //   api/nodesets/  — legacy crawler output
+        //   nodesets/      — new GitHubFetcher output (UA-Nodeset + companion specs)
         var blobNames = new List<string>();
         await foreach (var item in _container.GetBlobsAsync())
         {
             var name = item.Name;
-            if (name.StartsWith("cloudlib/", StringComparison.OrdinalIgnoreCase)
-                || name.StartsWith("_pipeline", StringComparison.OrdinalIgnoreCase))
+            if (!name.EndsWith(".xml", StringComparison.OrdinalIgnoreCase)) continue;
+            if (name.StartsWith("cloudlib/", StringComparison.OrdinalIgnoreCase)) continue;
+            if (!(name.StartsWith("api/nodesets/", StringComparison.OrdinalIgnoreCase)
+                  || name.StartsWith("nodesets/", StringComparison.OrdinalIgnoreCase)))
                 continue;
-            if (name.StartsWith("api/nodesets/", StringComparison.OrdinalIgnoreCase)
-                || (name.EndsWith(".xml", StringComparison.OrdinalIgnoreCase)
-                    && !name.Contains("/docs/", StringComparison.OrdinalIgnoreCase)))
-            {
-                blobNames.Add(name);
-            }
+            blobNames.Add(name);
         }
 
         _log.LogInformation("[NODESET] Found {Count} nodeset XML blobs", blobNames.Count);

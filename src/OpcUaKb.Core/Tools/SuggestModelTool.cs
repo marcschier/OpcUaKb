@@ -20,31 +20,43 @@ static class SuggestModelTool
         var specResults = await search.SearchAsync(
             description,
             "(content_type eq 'nodeset_summary' or content_type eq 'cloudlib_summary')",
-            ["section_title", "spec_part", "page_chunk"],
+            ["section_title", "spec_part", "spec_id", "spec_title", "page_chunk"],
             5);
 
         // Search for relevant ObjectTypes in existing specs (both sources)
         var typeResults = await search.SearchAsync(
             description,
             "node_class eq 'ObjectType' and (content_type eq 'nodeset' or content_type eq 'cloudlib_nodeset')",
-            ["browse_name", "spec_part", "parent_type", "page_chunk"],
+            ["browse_name", "spec_part", "spec_id", "parent_type", "page_chunk"],
             10);
 
-        // Search best practices documentation
+        // Search best practices documentation (works against both legacy chunks and new spec_section docs)
         var bpQuery = !string.IsNullOrWhiteSpace(focus)
             ? $"OPC UA modelling best practices {focus}"
             : "OPC UA modelling best practices ObjectType design composition inheritance";
         var bestPractices = await search.SearchAsync(
             bpQuery,
-            "content_type ne 'nodeset' and content_type ne 'nodeset_summary' and content_type ne 'nodeset_hierarchy'",
-            ["section_title", "source_url", "page_chunk"],
+            "(content_type eq 'spec_section' or content_type eq 'text' or content_type eq 'table' or content_type eq 'diagram')",
+            ["section_title", "source_url", "page_chunk", "spec_id", "section_number", "spec_part"],
             5);
 
-        // Search for relevant base types from common specs (DI, Machinery, IA)
+        // Search relevant spec_section docs (new v2 schema) as a third source.
+        // Bounded to top 5 to keep the output compact.
+        var sectionResults = await search.SearchAsync(
+            description,
+            "content_type eq 'spec_section'",
+            ["section_title", "section_number", "spec_id", "spec_title", "breadcrumb", "source_url", "page_chunk"],
+            5);
+
+        // Search for relevant base types from common specs (DI, Machinery, IA) — match either schema
+        var baseSpecMatch =
+            "((spec_part eq 'DI' or spec_id eq 'DI') or " +
+            "(spec_part eq 'Machinery' or spec_id eq 'Machinery') or " +
+            "(spec_part eq 'IA' or spec_id eq 'IA'))";
         var baseTypeResults = await search.SearchAsync(
             $"{description} device machine",
-            "node_class eq 'ObjectType' and (spec_part eq 'DI' or spec_part eq 'Machinery' or spec_part eq 'IA') and content_type eq 'nodeset'",
-            ["browse_name", "spec_part", "parent_type", "page_chunk"],
+            $"node_class eq 'ObjectType' and {baseSpecMatch} and content_type eq 'nodeset'",
+            ["browse_name", "spec_part", "spec_id", "parent_type", "page_chunk"],
             10);
 
         var sb = new StringBuilder();
@@ -62,9 +74,11 @@ static class SuggestModelTool
                 var d = r.Document;
                 var name = d.GetString("browse_name");
                 var sp = d.GetString("spec_part");
+                var sid = d.GetString("spec_id");
+                var specLabel = !string.IsNullOrEmpty(sid) ? sid : sp;
                 var parent = d.GetString("parent_type");
                 var chunk = d.GetString("page_chunk") ?? "";
-                sb.AppendLine($"- **{name}** ({sp}) — extends {parent}");
+                sb.AppendLine($"- **{name}** ({specLabel}) — extends {parent}");
                 if (chunk.Length > 200) chunk = chunk[..200] + "...";
                 sb.AppendLine($"  {chunk}");
             }
@@ -82,8 +96,10 @@ static class SuggestModelTool
                 var d = r.Document;
                 var name = d.GetString("browse_name");
                 var sp = d.GetString("spec_part");
+                var sid = d.GetString("spec_id");
+                var specLabel = !string.IsNullOrEmpty(sid) ? sid : sp;
                 var parent = d.GetString("parent_type");
-                sb.AppendLine($"- **{name}** ({sp}) — extends {parent}");
+                sb.AppendLine($"- **{name}** ({specLabel}) — extends {parent}");
             }
             sb.AppendLine();
         }
@@ -98,12 +114,38 @@ static class SuggestModelTool
             {
                 var d = r.Document;
                 var title = d.GetString("section_title");
+                var stitle = d.GetString("spec_title");
                 var sp = d.GetString("spec_part");
+                var sid = d.GetString("spec_id");
+                var specLabel = !string.IsNullOrEmpty(sid) ? sid : sp;
+                var displayTitle = !string.IsNullOrEmpty(title) ? title : stitle;
                 var chunk = d.GetString("page_chunk") ?? "";
                 // Extract first 2 lines of the summary
                 var lines = chunk.Split('\n', StringSplitOptions.RemoveEmptyEntries);
                 var summary = string.Join(" | ", lines.Take(3));
-                sb.AppendLine($"- **{title}** ({sp}): {summary}");
+                sb.AppendLine($"- **{displayTitle}** ({specLabel}): {summary}");
+            }
+            sb.AppendLine();
+        }
+
+        // Relevant spec sections from the new v2 schema (top 5)
+        if (sectionResults.Count > 0)
+        {
+            sb.AppendLine("### Relevant Specification Sections");
+            sb.AppendLine("Sections from indexed specs that discuss related concepts:");
+            sb.AppendLine();
+            foreach (var r in sectionResults)
+            {
+                var d = r.Document;
+                var title = d.GetString("section_title");
+                var num = d.GetString("section_number");
+                var sid = d.GetString("spec_id");
+                var url = d.GetString("source_url");
+                var header = !string.IsNullOrEmpty(sid) && !string.IsNullOrEmpty(num)
+                    ? $"- **{sid} §{num}** {title}"
+                    : $"- **{title}**";
+                if (!string.IsNullOrEmpty(url)) header += $" — [link]({url})";
+                sb.AppendLine(header);
             }
             sb.AppendLine();
         }

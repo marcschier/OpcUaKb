@@ -61,7 +61,7 @@ There are no unit tests — `OpcUaKb.Test` is a console app requiring live Azure
 
 ```bash
 # Required
-export STORAGE_CONNECTION_STRING="$(az storage account show-connection-string --name <prefix>storage -g <rg> -o tsv)"
+export STORAGE_ACCOUNT_NAME="<prefix>storage"
 export SEARCH_ENDPOINT="https://<prefix>-search.search.windows.net"
 export SEARCH_API_KEY="$(az search admin-key show --service-name <prefix>-search -g <rg> --query primaryKey -o tsv)"
 export AOAI_ENDPOINT="https://<prefix>-foundry.openai.azure.com"
@@ -70,7 +70,9 @@ export AOAI_ENDPOINT="https://<prefix>-foundry.openai.azure.com"
 export CLOUDLIB_USERNAME="your-email@example.com"
 export CLOUDLIB_PASSWORD="your-password"
 
-# Auth to AOAI is keyless via DefaultAzureCredential
+# Auth to Storage + AOAI is keyless via DefaultAzureCredential.
+# Your `az login` user must have "Storage Blob Data Contributor" on the
+# storage account (in production the pipeline job's MI has this role).
 az login
 
 dotnet run --project src/OpcUaKb.Pipeline

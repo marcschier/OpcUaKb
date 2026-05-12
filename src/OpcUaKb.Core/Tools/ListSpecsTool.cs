@@ -31,8 +31,13 @@ static partial class ListSpecsTool
 
         var filters = new List<string>
         {
-            "(content_type eq 'nodeset_summary' or content_type eq 'cloudlib_summary')",
-            "spec_part ne 'AllSpecs'",
+            // Include spec_section docs (v2 schema) so newly indexed specs appear in the list.
+            // Each spec contributes many spec_section docs — we dedupe client-side below.
+            "(content_type eq 'nodeset_summary' or content_type eq 'cloudlib_summary' or content_type eq 'spec_section')",
+            // Exclude the cross-spec AllSpecs summary doc. Use explicit null check
+            // because Azure Search treats `field ne 'X'` as false when the field is null,
+            // which would otherwise drop spec_section docs that have spec_part unset.
+            "(spec_part eq null or spec_part ne 'AllSpecs')",
         };
 
         if (!string.IsNullOrWhiteSpace(source))
@@ -42,7 +47,7 @@ static partial class ListSpecsTool
 
         var mode = (version_mode ?? "latest").Trim().ToLowerInvariant();
         if (mode == "latest" || string.IsNullOrEmpty(mode))
-            filters.Add("is_latest eq true");
+            filters.Add("(is_latest eq true or is_latest eq null)");
 
         var filter = string.Join(" and ", filters);
 
@@ -58,12 +63,12 @@ static partial class ListSpecsTool
         var options = new SearchOptions
         {
             Filter = filter,
-            Size = 500,
+            Size = 1000,
             IncludeTotalCount = true,
             OrderBy = { orderByClause },
         };
-        foreach (var f in new[] { "spec_part", "spec_version", "source", "title", "description",
-            "publication_date", "namespace_uri", "is_latest", "version_rank", "popularity", "page_chunk" })
+        foreach (var f in new[] { "spec_part", "spec_id", "spec_title", "spec_version", "source", "title", "description",
+            "publication_date", "namespace_uri", "is_latest", "version_rank", "popularity", "page_chunk", "content_type" })
             options.Select.Add(f);
 
         var response = await search.Client.SearchAsync<SearchDocument>("*", options);
@@ -75,18 +80,39 @@ static partial class ListSpecsTool
             var chunk = d.GetString("page_chunk") ?? "";
             var nodeCountMatch = NodeCountRegex().Match(chunk);
 
+            // Prefer spec_id (new schema) but fall back to spec_part (legacy)
+            var sid = d.GetString("spec_id");
+            var sp = d.GetString("spec_part") ?? "";
+            var canonicalSpec = !string.IsNullOrEmpty(sid) ? sid : sp;
+            var stitle = d.GetString("spec_title");
+            var title = d.GetString("title");
+
             rows.Add(new SpecRow(
                 Source: d.GetString("source") ?? "",
-                SpecPart: d.GetString("spec_part") ?? "",
+                SpecPart: canonicalSpec,
                 Version: d.GetString("spec_version") ?? "",
-                Title: d.GetString("title"),
+                Title: !string.IsNullOrEmpty(title) ? title : stitle,
                 Desc: d.GetString("description"),
                 Pub: d.TryGetValue("publication_date", out var pv) && pv is DateTimeOffset dto ? dto : null,
                 Ns: d.GetString("namespace_uri"),
                 Popularity: ReadLong(d, "popularity"),
-                NodeCount: nodeCountMatch.Success ? int.Parse(nodeCountMatch.Groups[1].Value) : 0
+                NodeCount: nodeCountMatch.Success ? int.Parse(nodeCountMatch.Groups[1].Value) : 0,
+                ContentType: d.GetString("content_type") ?? ""
             ));
         }
+
+        // Dedupe spec_section docs: keep only one row per (spec_id, spec_version, source).
+        // Summary docs already represent one-per-spec, so they pass through unchanged.
+        rows = rows
+            .GroupBy(r => $"{r.Source}|{r.SpecPart}|{r.Version}")
+            .Select(g =>
+            {
+                // Prefer a summary doc if both exist; otherwise pick the first spec_section as the canonical row
+                var summary = g.FirstOrDefault(r =>
+                    r.ContentType is "nodeset_summary" or "cloudlib_summary");
+                return summary ?? g.First();
+            })
+            .ToList();
 
         if (rows.Count == 0)
             return $"No specs found matching source='{source ?? "any"}', version_mode='{mode}'.";
@@ -221,7 +247,7 @@ static partial class ListSpecsTool
     }
 
     record SpecRow(string Source, string SpecPart, string Version, string? Title, string? Desc,
-        DateTimeOffset? Pub, string? Ns, long Popularity, int NodeCount);
+        DateTimeOffset? Pub, string? Ns, long Popularity, int NodeCount, string ContentType);
 
     [GeneratedRegex(@"Total nodes:\s*(\d[\d,]*)")]
     private static partial Regex NodeCountRegex();

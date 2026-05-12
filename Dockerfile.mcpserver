@@ -1,8 +1,10 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 COPY src/OpcUaKb.McpServer/OpcUaKb.McpServer.csproj src/OpcUaKb.McpServer/
+COPY src/OpcUaKb.Core/OpcUaKb.Core.csproj src/OpcUaKb.Core/
 RUN dotnet restore src/OpcUaKb.McpServer/OpcUaKb.McpServer.csproj
 COPY src/OpcUaKb.McpServer/ src/OpcUaKb.McpServer/
+COPY src/OpcUaKb.Core/ src/OpcUaKb.Core/
 RUN dotnet publish src/OpcUaKb.McpServer/OpcUaKb.McpServer.csproj -c Release -o /app
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0

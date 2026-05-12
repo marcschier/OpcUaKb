@@ -69,7 +69,7 @@ static class CheckComplianceTool
         var filters = new List<string>
         {
             "content_type eq 'nodeset'",
-            $"spec_part eq '{spec}'",
+            SpecFilter.Match(spec),
         };
         if (!string.IsNullOrWhiteSpace(object_type))
             filters.Add($"parent_type eq '{object_type}'");

@@ -99,7 +99,7 @@ SEARCH_API_KEY=$(echo "$DEPLOY_OUTPUT" | jq -r '.searchApiKey.value')
 AOAI_ENDPOINT=$(echo "$DEPLOY_OUTPUT" | jq -r '.aoaiEndpoint.value')
 FOUNDRY_ENDPOINT=$(echo "$DEPLOY_OUTPUT" | jq -r '.foundryEndpoint.value')
 FOUNDRY_PROJECT_ENDPOINT=$(echo "$DEPLOY_OUTPUT" | jq -r '.foundryProjectEndpoint.value')
-STORAGE_CONN_STR=$(echo "$DEPLOY_OUTPUT" | jq -r '.storageConnectionString.value')
+STORAGE_ACCOUNT_NAME=$(echo "$DEPLOY_OUTPUT" | jq -r '.storageAccountName.value')
 ACR_LOGIN_SERVER=$(echo "$DEPLOY_OUTPUT" | jq -r '.acrLoginServer.value')
 MCP_ENDPOINT=$(echo "$DEPLOY_OUTPUT" | jq -r '.mcpEndpoint.value')
 

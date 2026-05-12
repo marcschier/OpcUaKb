@@ -33,20 +33,22 @@ static class CompareVersionsTool
         // If still no version-specific data, try version_rank for cloudlib
         if (oldNodes.Count == 0 && newNodes.Count == 0)
         {
-            var prevFilter = $"content_type eq 'cloudlib_nodeset' and spec_part eq '{spec}' and version_rank eq 2";
-            var latestFilter = $"content_type eq 'cloudlib_nodeset' and spec_part eq '{spec}' and version_rank eq 1";
-            if (!string.IsNullOrWhiteSpace(node_class))
-            {
-                prevFilter += $" and node_class eq '{node_class}'";
-                latestFilter += $" and node_class eq '{node_class}'";
-            }
+            var specMatch = SpecFilter.Match(spec);
+            var nodeClassClause = !string.IsNullOrWhiteSpace(node_class)
+                ? $" and node_class eq '{node_class}'" : "";
+            var prevFilter = $"content_type eq 'cloudlib_nodeset' and {specMatch} and version_rank eq 2{nodeClassClause}";
+            var latestFilter = $"content_type eq 'cloudlib_nodeset' and {specMatch} and version_rank eq 1{nodeClassClause}";
             var select = new[] { "browse_name", "node_class", "parent_type", "modelling_rule", "data_type" };
             oldNodes = await search.SearchAsync("*", prevFilter, select, 1000);
             newNodes = await search.SearchAsync("*", latestFilter, select, 1000);
         }
 
-        if (oldNodes.Count == 0 && newNodes.Count == 0)
-            return $"No nodes found for spec '{spec}' in either {old_version} or {new_version}.";
+        // Also fetch spec_section docs for text-only diff (new v2 schema)
+        var oldSections = await FetchVersionSections(search, spec, old_version);
+        var newSections = await FetchVersionSections(search, spec, new_version);
+
+        if (oldNodes.Count == 0 && newNodes.Count == 0 && oldSections.Count == 0 && newSections.Count == 0)
+            return $"No nodes or sections found for spec '{spec}' in either {old_version} or {new_version}.";
 
         // Build lookup by browse_name + node_class + parent_type (dedup on collisions)
         var oldSet = oldNodes
@@ -101,6 +103,23 @@ static class CompareVersionsTool
             }
         }
 
+        // Spec section diff (text-only changes) — keyed by section_id, then section_number as fallback
+        var oldSectionMap = oldSections
+            .GroupBy(s => MakeSectionKey(s.Document))
+            .ToDictionary(g => g.Key, g => g.First().Document);
+        var newSectionMap = newSections
+            .GroupBy(s => MakeSectionKey(s.Document))
+            .ToDictionary(g => g.Key, g => g.First().Document);
+
+        var addedSections = new List<string>();
+        var removedSections = new List<string>();
+        foreach (var (key, doc) in newSectionMap)
+            if (!oldSectionMap.ContainsKey(key))
+                addedSections.Add($"  + {FormatSection(doc)}");
+        foreach (var (key, doc) in oldSectionMap)
+            if (!newSectionMap.ContainsKey(key))
+                removedSections.Add($"  - {FormatSection(doc)}");
+
         var sb = new StringBuilder();
         sb.AppendLine($"## Version Comparison: {spec} {old_version} → {new_version}");
         sb.AppendLine();
@@ -108,9 +127,17 @@ static class CompareVersionsTool
         sb.AppendLine($"New version nodes: {newNodes.Count}");
         sb.AppendLine($"Added: {added.Count} | Removed: {removed.Count} | Changed: {changed.Count}");
         sb.AppendLine($"**Breaking changes: {breakingCount}**");
+        if (oldSections.Count > 0 || newSections.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine($"Old version sections: {oldSections.Count}");
+            sb.AppendLine($"New version sections: {newSections.Count}");
+            sb.AppendLine($"Sections added: {addedSections.Count} | Sections removed: {removedSections.Count}");
+        }
         sb.AppendLine();
 
-        if (breakingCount == 0 && added.Count == 0 && removed.Count == 0 && changed.Count == 0)
+        if (breakingCount == 0 && added.Count == 0 && removed.Count == 0 && changed.Count == 0
+            && addedSections.Count == 0 && removedSections.Count == 0)
         {
             sb.AppendLine("✅ No differences found between versions.");
         }
@@ -136,6 +163,20 @@ static class CompareVersionsTool
                 foreach (var a in added) sb.AppendLine(a);
                 sb.AppendLine();
             }
+            if (removedSections.Count > 0)
+            {
+                sb.AppendLine("### Removed Spec Sections (text-only changes)");
+                foreach (var r in removedSections.Take(50)) sb.AppendLine(r);
+                if (removedSections.Count > 50) sb.AppendLine($"  ... and {removedSections.Count - 50} more");
+                sb.AppendLine();
+            }
+            if (addedSections.Count > 0)
+            {
+                sb.AppendLine("### Added Spec Sections (text-only changes)");
+                foreach (var a in addedSections.Take(50)) sb.AppendLine(a);
+                if (addedSections.Count > 50) sb.AppendLine($"  ... and {addedSections.Count - 50} more");
+                sb.AppendLine();
+            }
         }
 
         return sb.ToString();
@@ -149,6 +190,15 @@ static class CompareVersionsTool
         return $"{nc}|{name}|{parent}";
     }
 
+    static string MakeSectionKey(Azure.Search.Documents.Models.SearchDocument doc)
+    {
+        var sid = doc.GetString("section_id");
+        if (!string.IsNullOrEmpty(sid)) return $"id:{sid}";
+        var num = doc.GetString("section_number") ?? "";
+        var title = doc.GetString("section_title") ?? "";
+        return $"num:{num}|{title}";
+    }
+
     static string FormatNode(Azure.Search.Documents.Models.SearchDocument doc)
     {
         var name = doc.GetString("browse_name");
@@ -159,6 +209,13 @@ static class CompareVersionsTool
         if (!string.IsNullOrEmpty(parent)) parts.Add($"in {parent}");
         if (!string.IsNullOrEmpty(mr)) parts.Add($"({mr})");
         return string.Join(" ", parts);
+    }
+
+    static string FormatSection(Azure.Search.Documents.Models.SearchDocument doc)
+    {
+        var num = doc.GetString("section_number");
+        var title = doc.GetString("section_title") ?? "(untitled)";
+        return string.IsNullOrEmpty(num) ? title : $"§{num} {title}";
     }
 
     static void CompareField(Azure.Search.Documents.Models.SearchDocument oldDoc,
@@ -174,15 +231,38 @@ static class CompareVersionsTool
     static async Task<List<SearchService.SearchResult>> FetchVersionNodes(
         SearchService search, string spec, string version, string contentType, string? nodeClass)
     {
+        // Prefer spec_id (new v2 schema) but accept legacy spec_part. If spec looks like an
+        // OPC-XXXX identifier we lean toward spec_id; otherwise the OR form is sufficient.
+        var specMatch = System.Text.RegularExpressions.Regex.IsMatch(spec, @"^OPC-\d")
+            ? $"spec_id eq '{SpecFilter.Escape(spec)}'"
+            : SpecFilter.Match(spec);
+
         var filters = new List<string>
         {
             $"content_type eq '{contentType}'",
-            $"spec_part eq '{spec}'",
+            specMatch,
             $"spec_version eq '{version}'"
         };
         if (!string.IsNullOrWhiteSpace(nodeClass))
             filters.Add($"node_class eq '{nodeClass}'");
         var select = new[] { "browse_name", "node_class", "parent_type", "modelling_rule", "data_type" };
+        return await search.SearchAsync("*", string.Join(" and ", filters), select, 1000);
+    }
+
+    static async Task<List<SearchService.SearchResult>> FetchVersionSections(
+        SearchService search, string spec, string version)
+    {
+        var specMatch = System.Text.RegularExpressions.Regex.IsMatch(spec, @"^OPC-\d")
+            ? $"spec_id eq '{SpecFilter.Escape(spec)}'"
+            : SpecFilter.Match(spec);
+
+        var filters = new List<string>
+        {
+            "content_type eq 'spec_section'",
+            specMatch,
+            $"spec_version eq '{version}'",
+        };
+        var select = new[] { "section_id", "section_number", "section_title", "spec_id", "spec_part" };
         return await search.SearchAsync("*", string.Join(" and ", filters), select, 1000);
     }
 }

@@ -45,10 +45,10 @@ sealed class CloudLibraryClient
     readonly BlobContainerClient _container;
     readonly ILogger _log;
 
-    CloudLibraryClient(string username, string password, string storageConnectionString, ILogger logger)
+    CloudLibraryClient(string username, string password, BlobServiceClient blobs, ILogger logger)
     {
         _log = logger;
-        _container = new BlobContainerClient(storageConnectionString, ContainerName);
+        _container = blobs.GetBlobContainerClient(ContainerName);
         _http = new HttpClient { BaseAddress = new Uri(BaseUrl) };
         var auth = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{username}:{password}"));
         _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", auth);
@@ -58,7 +58,7 @@ sealed class CloudLibraryClient
     /// <summary>
     /// Creates a client if credentials are available, otherwise returns null.
     /// </summary>
-    public static CloudLibraryClient? TryCreate(string storageConnectionString, ILogger logger)
+    public static CloudLibraryClient? TryCreate(BlobServiceClient blobs, ILogger logger)
     {
         var username = Environment.GetEnvironmentVariable("CLOUDLIB_USERNAME");
         var password = Environment.GetEnvironmentVariable("CLOUDLIB_PASSWORD");
@@ -69,7 +69,7 @@ sealed class CloudLibraryClient
         }
 
         logger.LogInformation("[CLOUDLIB] Credentials found, CloudLibrary integration enabled");
-        return new CloudLibraryClient(username, password, storageConnectionString, logger);
+        return new CloudLibraryClient(username, password, blobs, logger);
     }
 
     /// <summary>

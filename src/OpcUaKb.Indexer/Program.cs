@@ -19,8 +19,8 @@ var searchEndpoint = Environment.GetEnvironmentVariable("SEARCH_ENDPOINT")
     ?? "https://opcua-kb-search.search.windows.net";
 var searchApiKey = Environment.GetEnvironmentVariable("SEARCH_API_KEY")
     ?? throw new InvalidOperationException("Set SEARCH_API_KEY");
-var storageConnStr = Environment.GetEnvironmentVariable("STORAGE_CONNECTION_STRING")
-    ?? throw new InvalidOperationException("Set STORAGE_CONNECTION_STRING");
+var storageAccountName = Environment.GetEnvironmentVariable("STORAGE_ACCOUNT_NAME")
+    ?? throw new InvalidOperationException("Set STORAGE_ACCOUNT_NAME");
 var aoaiEndpoint = Environment.GetEnvironmentVariable("AOAI_ENDPOINT")
     ?? "https://opcua-kb-foundry.openai.azure.com";
 TokenCredential credential = new DefaultAzureCredential();
@@ -36,7 +36,10 @@ const int SearchUploadBatchSize = 100;
 
 var indexClient = new SearchIndexClient(new Uri(searchEndpoint), new AzureKeyCredential(searchApiKey));
 var searchClient = indexClient.GetSearchClient(IndexName);
-var blobContainer = new BlobContainerClient(storageConnStr, ContainerName);
+var blobServiceClient = new BlobServiceClient(
+    new Uri($"https://{storageAccountName}.blob.core.windows.net"),
+    credential);
+var blobContainer = blobServiceClient.GetBlobContainerClient(ContainerName);
 using var http = new HttpClient();
 
 // ── Step 1: Create or update search index ──────────────────────────────
@@ -183,6 +186,13 @@ async Task CreateIndexAsync()
             new SearchableField("description") { AnalyzerName = LexicalAnalyzerName.EnMicrosoft },
             new SimpleField("popularity", SearchFieldDataType.Int64) { IsFilterable = true, IsSortable = true },
             new SimpleField("in_opcfoundation_index", SearchFieldDataType.Boolean) { IsFilterable = true, IsFacetable = true },
+            new SimpleField("spec_id", SearchFieldDataType.String) { IsFilterable = true, IsFacetable = true },
+            new SearchableField("spec_title") { AnalyzerName = LexicalAnalyzerName.EnMicrosoft },
+            new SimpleField("section_id", SearchFieldDataType.String) { IsFilterable = true },
+            new SimpleField("section_number", SearchFieldDataType.String) { IsFilterable = true, IsSortable = true },
+            new SimpleField("section_path", SearchFieldDataType.String),
+            new SimpleField("breadcrumb", SearchFieldDataType.Collection(SearchFieldDataType.String)) { IsFilterable = true, IsFacetable = true },
+            new SimpleField("figures", SearchFieldDataType.Collection(SearchFieldDataType.String)) { IsFilterable = true },
         },
         ScoringProfiles =
         {

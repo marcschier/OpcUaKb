@@ -106,7 +106,7 @@ az bicep build --file infra/main.bicep
 | `searchEndpoint` | `https://{prefix}-search.search.windows.net` | |
 | `searchApiKey` | (admin key) | Sensitive — emitted for use by `deploy.sh` |
 | `foundryEndpoint` / `foundryProjectEndpoint` / `aoaiEndpoint` | Foundry account / project endpoints | |
-| `storageConnectionString` | Storage connection string | Sensitive |
+| `storageAccountName` | Storage account name | Used by Pipeline + Indexer with DefaultAzureCredential (shared-key auth disabled) |
 | `acrLoginServer` | `{prefix}registry.azurecr.io` | |
 | `mcpEndpoint` | `https://{prefix}-search.search.windows.net/knowledgebases/{prefix}-kb/mcp?api-version=2025-11-01-preview` | Built-in KB-hosted MCP endpoint |
 | `mcpServerEndpoint` | `https://{prefix}-mcp-server.<env>.azurecontainerapps.io` | Custom MCP server (11 tools + RAG); the Foundry Toolbox proxies to this |

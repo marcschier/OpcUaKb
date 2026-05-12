@@ -19,7 +19,7 @@ static class TypeHierarchyTool
     {
         var filters = new List<string> { "(content_type eq 'nodeset_hierarchy' or content_type eq 'cloudlib_hierarchy')" };
         if (!string.IsNullOrWhiteSpace(spec))
-            filters.Add($"spec_part eq '{spec}'");
+            filters.Add(SpecFilter.Match(spec));
 
         // Search hierarchy docs by type name
         var results = await search.SearchAsync(

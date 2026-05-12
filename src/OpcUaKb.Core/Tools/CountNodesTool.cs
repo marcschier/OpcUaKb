@@ -32,7 +32,7 @@ static class CountNodesTool
         if (!string.IsNullOrWhiteSpace(node_class))
             filters.Add($"node_class eq '{node_class}'");
         if (!string.IsNullOrWhiteSpace(spec))
-            filters.Add($"spec_part eq '{spec}'");
+            filters.Add(SpecFilter.Match(spec));
         if (!string.IsNullOrWhiteSpace(modelling_rule))
             filters.Add($"modelling_rule eq '{modelling_rule}'");
         if (!string.IsNullOrWhiteSpace(source))
@@ -44,13 +44,33 @@ static class CountNodesTool
             filters.Add(versionFilter);
 
         var filter = string.Join(" and ", filters);
-        var facets = await search.FacetSearchAsync(filter, [$"{facet},count:{top}"]);
 
-        if (!facets.TryGetValue(facet, out var facetResults) || facetResults.Count == 0)
+        // For the 'spec_part' facet: prefer the new spec_id field; fall back to legacy spec_part
+        // if spec_id is unset on the underlying docs. NodeSet content predates the v2 schema,
+        // so spec_id may be null on legacy index docs.
+        string facetField = facet;
+        IList<FacetResult>? facetResults = null;
+        if (facet == "spec_part")
+        {
+            var trySpecId = await search.FacetSearchAsync(filter, [$"spec_id,count:{top}"]);
+            if (trySpecId.TryGetValue("spec_id", out var idResults) && idResults.Count > 0)
+            {
+                facetField = "spec_id";
+                facetResults = idResults;
+            }
+        }
+
+        if (facetResults == null)
+        {
+            var facets = await search.FacetSearchAsync(filter, [$"{facet},count:{top}"]);
+            facets.TryGetValue(facet, out facetResults);
+        }
+
+        if (facetResults == null || facetResults.Count == 0)
             return $"No facet results for '{facet}' with the given filters.";
 
         var sb = new StringBuilder();
-        sb.AppendLine($"Node counts by {facet}:");
+        sb.AppendLine($"Node counts by {facetField}:");
         VersionFilter.AppendVersionNote(sb, version_mode, spec_version, false);
         sb.AppendLine();
 

@@ -28,7 +28,7 @@ public static class SearchNodesTool
         if (!string.IsNullOrWhiteSpace(node_class))
             filters.Add($"node_class eq '{node_class}'");
         if (!string.IsNullOrWhiteSpace(spec))
-            filters.Add($"spec_part eq '{spec}'");
+            filters.Add(SpecFilter.Match(spec));
         if (!string.IsNullOrWhiteSpace(parent_type))
             filters.Add($"parent_type eq '{parent_type}'");
         if (!string.IsNullOrWhiteSpace(modelling_rule))
@@ -36,7 +36,7 @@ public static class SearchNodesTool
         if (!string.IsNullOrWhiteSpace(source))
             filters.Add($"source eq '{source.ToLowerInvariant()}'");
 
-        var select = new[] { "browse_name", "node_class", "spec_part", "spec_version", "parent_type", "modelling_rule", "data_type", "page_chunk", "is_latest", "version_rank", "source", "namespace_uri" };
+        var select = new[] { "browse_name", "node_class", "spec_part", "spec_id", "spec_version", "parent_type", "modelling_rule", "data_type", "page_chunk", "is_latest", "version_rank", "source", "namespace_uri" };
         var (results, usedFallback) = await VersionFilter.SearchWithFallbackAsync(
             search, query, filters, select, top, version_mode, spec_version);
 
@@ -64,6 +64,8 @@ public static class SearchNodesTool
             var name = d.GetString("browse_name");
             var nc = d.GetString("node_class");
             var sp = d.GetString("spec_part");
+            var sid = d.GetString("spec_id");
+            var specLabel = !string.IsNullOrEmpty(sid) ? sid : sp;
             var sv = d.GetString("spec_version");
             var pt = d.GetString("parent_type");
             var mr = d.GetString("modelling_rule");
@@ -72,7 +74,7 @@ public static class SearchNodesTool
             var chunk = d.GetString("page_chunk");
 
             var srcTag = string.IsNullOrEmpty(src) ? "" : $" [src:{src}]";
-            sb.AppendLine($"• {name} [{nc}] — Spec: {sp} ({sv}){srcTag}");
+            sb.AppendLine($"• {name} [{nc}] — Spec: {specLabel} ({sv}){srcTag}");
             if (!string.IsNullOrEmpty(pt)) sb.AppendLine($"  Parent: {pt}");
             if (!string.IsNullOrEmpty(mr)) sb.AppendLine($"  ModellingRule: {mr}");
             if (!string.IsNullOrEmpty(dt)) sb.AppendLine($"  DataType: {dt}");
