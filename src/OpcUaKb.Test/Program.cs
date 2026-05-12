@@ -7,10 +7,17 @@ using Microsoft.Extensions.Logging.Abstractions;
 // ── Test selector ──────────────────────────────────────────────────────
 // Usage:
 //   dotnet run --project src/OpcUaKb.Test           → run all tests (KB test skipped if no SEARCH_API_KEY)
+//   dotnet run --project src/OpcUaKb.Test -- url    → run only the URL absolutizer test
 //   dotnet run --project src/OpcUaKb.Test -- sts    → run only the STS metadata parser test
 //   dotnet run --project src/OpcUaKb.Test -- html   → run only the spec HTML parser test
 //   dotnet run --project src/OpcUaKb.Test -- kb     → run only the live Knowledge Base test
 var selector = args.Length > 0 ? args[0].ToLowerInvariant() : "all";
+
+if (selector is "url" or "all")
+{
+    RunUrlHelperTest();
+    if (selector == "url") return;
+}
 
 if (selector is "sts" or "all")
 {
@@ -123,6 +130,84 @@ foreach (var (query, index) in testQueries.Select((q, i) => (q, i)))
 Console.WriteLine($"\n{new string('═', 80)}");
 Console.WriteLine($"Results: {passed}/{testQueries.Length} passed");
 Console.WriteLine(passed == testQueries.Length ? "All tests passed! ✓" : "Some tests failed ✗");
+
+// ═══════════════════════════════════════════════════════════════════════
+// URL absolutizer test — guards against the Linux Uri.TryCreate quirk that
+// previously caused SpecCatalog to emit relative `/specs/.../sts-xml`
+// hrefs which then made HttpClient throw "An invalid request URI was
+// provided" (production: opcua-kb-sc-pipeline-job-ix4nmeq, ~200 errors).
+//
+// Naive `Uri.TryCreate(href, UriKind.Absolute, out _)` returns TRUE on
+// Linux for paths starting with `/` (parsed as `file://` URIs), but FALSE
+// on Windows. The test below pins the behaviour we actually want: any
+// root-relative href must be combined with the base URL on every OS.
+// ═══════════════════════════════════════════════════════════════════════
+static void RunUrlHelperTest()
+{
+    Console.WriteLine("URL absolutizer test");
+    Console.WriteLine(new string('═', 80));
+    Console.WriteLine($"  Platform: {Environment.OSVersion.Platform}  RID: {System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier}");
+
+    const string Base = "https://reference.opcfoundation.org";
+
+    var cases = new (string Href, string Expected, string Description)[]
+    {
+        ("/specs/OPC-10000-2/v1.04/t63914193972/download/sts-xml",
+         "https://reference.opcfoundation.org/specs/OPC-10000-2/v1.04/t63914193972/download/sts-xml",
+         "root-relative STS XML href is combined with the base"),
+
+        ("/specs/OPC-10000-3/v1.05.06/t63914194059/download/markdown",
+         "https://reference.opcfoundation.org/specs/OPC-10000-3/v1.05.06/t63914194059/download/markdown",
+         "root-relative Markdown href is combined with the base"),
+
+        ("/foo/bar",
+         "https://reference.opcfoundation.org/foo/bar",
+         "any other root-relative path is combined with the base (Linux quirk regression test)"),
+
+        ("https://example.com/abs",
+         "https://example.com/abs",
+         "https:// absolute URL is returned unchanged"),
+
+        ("HTTP://EXAMPLE.COM/Abs",
+         "HTTP://EXAMPLE.COM/Abs",
+         "scheme detection is case-insensitive and preserves casing"),
+
+        ("relative/path",
+         "https://reference.opcfoundation.org/relative/path",
+         "schemeless relative path joins with a slash"),
+
+        ("",
+         "",
+         "empty href is returned unchanged"),
+
+        ("//cdn.example.com/foo",
+         "https://cdn.example.com/foo",
+         "protocol-relative URL inherits base scheme"),
+    };
+
+    var failures = new List<string>();
+    foreach (var (href, expected, description) in cases)
+    {
+        var actual = UrlHelper.Absolutize(Base, href);
+        var ok = actual == expected;
+        var marker = ok ? "✓" : "✗";
+        Console.WriteLine($"  {marker} {description}");
+        Console.WriteLine($"      href     = \"{href}\"");
+        Console.WriteLine($"      expected = \"{expected}\"");
+        Console.WriteLine($"      actual   = \"{actual}\"");
+        if (!ok) failures.Add(description);
+    }
+
+    if (failures.Count > 0)
+    {
+        Console.WriteLine($"\n  URL absolutizer test FAILED ({failures.Count} assertion(s) failed)");
+        throw new InvalidOperationException(
+            $"URL absolutizer test failed: {string.Join("; ", failures)}");
+    }
+
+    Console.WriteLine("  URL absolutizer test PASSED ✓");
+    Console.WriteLine(new string('═', 80));
+}
 
 // ═══════════════════════════════════════════════════════════════════════
 // STS metadata parser test

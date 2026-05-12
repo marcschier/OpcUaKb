@@ -17,6 +17,7 @@
   <ItemGroup>
     <Compile Include="..\OpcUaKb.Pipeline\StsMetadataParser.cs" Link="StsMetadataParser.cs" />
     <Compile Include="..\OpcUaKb.Pipeline\SpecHtmlParser.cs" Link="SpecHtmlParser.cs" />
+    <Compile Include="..\OpcUaKb.Pipeline\UrlHelper.cs" Link="UrlHelper.cs" />
   </ItemGroup>
 
   <ItemGroup>

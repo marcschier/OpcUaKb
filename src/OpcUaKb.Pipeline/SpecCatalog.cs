@@ -234,7 +234,7 @@ sealed class SpecCatalog
             var href = a.GetAttribute("href") ?? "";
             if (string.IsNullOrEmpty(href)) continue;
 
-            var absolute = AbsolutizeUrl(href);
+            var absolute = UrlHelper.Absolutize(BaseUrl, href);
             if (href.EndsWith("/sts-xml", StringComparison.OrdinalIgnoreCase))
                 sts = absolute;
             else if (href.EndsWith("/markdown", StringComparison.OrdinalIgnoreCase))
@@ -408,12 +408,5 @@ sealed class SpecCatalog
         using var response = await RetryHelper.RetryAsync(() => _http.GetAsync(url, ct), _log);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadAsStringAsync(ct);
-    }
-
-    static string AbsolutizeUrl(string href)
-    {
-        if (Uri.TryCreate(href, UriKind.Absolute, out _)) return href;
-        if (href.StartsWith('/')) return BaseUrl + href;
-        return $"{BaseUrl}/{href}";
     }
 }

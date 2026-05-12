@@ -35,9 +35,16 @@ sealed class SpecIndexer
     const int UploadBatchSize = 100;
     const int EmbeddingDimensions = 3072;
 
-    // text-embedding-3-large hard-caps each input at 8191 tokens. We truncate
-    // at ~30 K characters (≈ 7 K tokens) to leave headroom for tokenizer slop.
-    const int MaxEmbeddingChars = 30_000;
+    // text-embedding-3-large hard-caps each input at 8192 tokens. OPC UA spec
+    // text is unusually token-dense (long identifiers, hex tables, code
+    // listings in Annex sections), so the worst-case ratio drops to roughly
+    // 3 chars per token — at the previous 30_000 char limit a single Annex
+    // chunk could still exceed 8192 tokens and trip "Invalid 'input[N]':
+    // maximum input length is 8192 tokens" (HTTP 400). 24_000 chars maps to
+    // ~6500-8000 tokens depending on density and stays safely under the cap.
+    // The full text is preserved in the search doc; only the embedding input
+    // is truncated, so retrieval quality is unaffected.
+    const int MaxEmbeddingChars = 24_000;
     const string EmbeddingDeployment = "text-embedding-3-large";
 
     // Estimate ~200 tokens per chunk and ~120 K TPM of embedding capacity.
