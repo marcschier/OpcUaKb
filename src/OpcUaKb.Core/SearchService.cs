@@ -8,7 +8,7 @@ using Azure.Search.Documents.Models;
 
 sealed public class SearchService
 {
-    const string DefaultIndexName = "opcua-content-index";
+    const string DefaultIndexName = "opcua-content-index-v2";
 
     public SearchClient Client { get; }
 

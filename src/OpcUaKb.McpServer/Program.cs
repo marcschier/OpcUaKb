@@ -12,7 +12,7 @@ using ModelContextProtocol.Server;
 //   stdio:              Pass --stdio for local Copilot CLI usage
 //
 // Required env vars: SEARCH_ENDPOINT, SEARCH_API_KEY
-// Optional: SEARCH_INDEX_NAME (default: opcua-content-index)
+// Optional: SEARCH_INDEX_NAME (default: opcua-content-index-v2)
 //           AOAI_ENDPOINT — enables search_docs_rag tool (KB retrieve + GPT-4o)
 //           AOAI_API_KEY  — AOAI key auth (falls back to Managed Identity)
 //           KB_NAME       — knowledge base name (default: opcua-kb)
