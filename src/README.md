@@ -8,7 +8,7 @@ All projects target .NET 10 with nullable enabled and implicit usings.
 |---------|------|-------------|
 | [`OpcUaKb.Pipeline`](OpcUaKb.Pipeline/) | Console (Container Apps Job) | Combined crawl + index + NodeSet parse + CloudLib pipeline |
 | [`OpcUaKb.McpServer`](OpcUaKb.McpServer/) | Web (Container App) | MCP server with 11 tools — search, RAG Q&A, compliance, modelling (HTTP/SSE + stdio) |
-| [`OpcUaKb.HostedAgent`](OpcUaKb.HostedAgent/) | Web (Foundry Hosted Agent) | Microsoft Agent Framework agent using the Responses protocol; consumes a Foundry Toolbox that wraps `OpcUaKb.McpServer`. Replaces the legacy Bot Framework agent. |
+| [`OpcUaKb.HostedAgent`](OpcUaKb.HostedAgent/) | Web (Foundry Hosted Agent) | Microsoft Agent Framework agent using the Responses protocol; connects directly to `OpcUaKb.McpServer` via `ModelContextProtocol.Client` so each MCP tool is a distinct `AIFunction`. Replaces the legacy Bot Framework agent. |
 | [`OpcUaKb.Core`](OpcUaKb.Core/) | Library | Shared `KbService` (KB retrieve + GPT-4o synthesis) and tool implementations used by McpServer |
 | [`OpcUaKb.Setup`](OpcUaKb.Setup/) | Console | Creates Web Knowledge Source, Knowledge Base, verifies MCP endpoint |
 | [`OpcUaKb.Crawler`](OpcUaKb.Crawler/) | Console | Standalone BFS web crawler for `*.opcfoundation.org` |
@@ -35,8 +35,9 @@ There are no unit tests — `OpcUaKb.Test` is a console app requiring live Azure
 | `Azure.AI.OpenAI` | 2.9.0-beta.1 | Pipeline, Indexer |
 | `Azure.Identity` | 1.14.2 | Core (DefaultAzureCredential for AOAI) |
 | `ModelContextProtocol.AspNetCore` | 1.2.0 | McpServer |
+| `ModelContextProtocol` (Core) | 1.2.0 | HostedAgent (direct MCP client) |
 | `Microsoft.Agents.AI.Foundry.Hosting` | 1.3.0-preview.260423.1 | HostedAgent (Agent Framework + Responses) |
-| `Azure.AI.Projects` | 2.1.0-beta.1 | HostedAgent (Toolbox + project client) |
+| `Azure.AI.Projects` | 2.1.0-beta.1 | HostedAgent (project client + AsAIAgent) |
 
 ## Conventions
 
@@ -144,14 +145,13 @@ The Hosted Agent (`OpcUaKb.HostedAgent`) is a Foundry Hosted Agent using the **R
 ```
 User in Teams/M365 Copilot → Foundry Agent Application (Activity bridge)
    → POST /responses → OpcUaKb.HostedAgent (Foundry-managed container)
-       → projectClient.AsAIAgent(model, instructions, tools)
-       → Foundry Responses API runs the tool loop server-side
-           → Foundry Toolbox "opcua-kb-tools" (MCP-compatible endpoint)
-               → OpcUaKb.McpServer (Container App, hosts the 11 tools)
-                   → Azure AI Search
+       → ModelContextProtocol.Client.McpClient → OpcUaKb.McpServer (Container App)
+           → Azure AI Search + Azure AI Foundry (RAG)
 ```
 
-The hosted agent itself is ~60 lines of code — the entire tool-using loop is handled by the Foundry Responses API. No manual chat completions, no manual history hydration, no manual tool dispatch.
+Each of the 11 MCP tools (search_docs, list_specs, get_spec_summary, etc.) becomes a distinct `McpClientTool` (`AIFunction`) so GPT-4o picks them by name. The Agent Framework hosting library runs the full tool-call loop locally in the container (model → tool_call → MCP roundtrip → tool_result → final answer). No manual history hydration, no manual dispatch.
+
+> **Region constraint** — Foundry Hosted Agents are in preview and only available in select regions (e.g., westus3, westus, norwayeast, francecentral, japaneast). The KB infrastructure (Search, Storage, MCP server, pipeline job) can be in any other region — the agent calls the MCP server cross-region over HTTPS.
 
 ### Environment Variables
 
@@ -159,7 +159,7 @@ The hosted agent itself is ~60 lines of code — the entire tool-using loop is h
 |----------|----------|---------|-------------|
 | `FOUNDRY_PROJECT_ENDPOINT` | ✓ | | Foundry project endpoint (auto-injected in hosted containers) |
 | `AZURE_AI_MODEL_DEPLOYMENT_NAME` | ✓ | | Model deployment name (e.g. `gpt-4o`) |
-| `TOOLBOX_NAME` | ✓ | `opcua-kb-tools` | Foundry Toolbox to load tools from |
+| `MCP_SERVER_URL` | ✓ | | Base URL of the `OpcUaKb.McpServer` Container App. The agent connects here directly over HTTPS. |
 | `APPLICATIONINSIGHTS_CONNECTION_STRING` | | | Auto-injected in hosted containers; enables tracing |
 
 ### Local Testing
@@ -175,13 +175,25 @@ The agent uses `DefaultAzureCredential` so a fresh `az login` (or `azd auth logi
 
 ### Deployment
 
-Use `scripts/install-toolbox-and-agent.ps1` — it provisions the Toolbox (declared in `agent.manifest.yaml`), builds the container in ACR, deploys via `azd deploy`, optionally publishes as an Agent Application, and binds to Teams via the Activity bridge. See [`scripts/README.md`](../scripts/README.md).
+```bash
+cd src/OpcUaKb.HostedAgent
+azd env new opcua-kb-w3
+azd env set AZURE_LOCATION westus3
+azd env set ENABLE_HOSTED_AGENTS true
+azd env set MCP_SERVER_URL https://<mcp-server-fqdn>/
+azd provision           # creates Foundry account, project, ACR, gpt-4o
+azd deploy              # builds container, pushes to ACR, creates agent
+```
+
+See [`src/OpcUaKb.HostedAgent/README.md`](OpcUaKb.HostedAgent/README.md) for the full lifecycle including Agent Application publishing and Teams binding.
 
 ## Search Index Schema
 
-The index schema is duplicated in two places and **must be kept in sync**:
+The index schema (`opcua-content-index-v2`) is duplicated in two places and **must be kept in sync**:
 - `OpcUaKb.Pipeline/Program.cs` → `EnsureIndexAsync()`
 - `OpcUaKb.Indexer/Program.cs` → `CreateIndexAsync()`
+
+The v1 index (`opcua-content-index`) is no longer written to but the schema is preserved for back-compat tools that still query it (see `SearchService.DefaultIndexName` and the back-compat filter in `OpcUaKb.Core/SpecFilter.cs`).
 
 Azure Search cannot change existing field attributes (e.g., adding `IsFacetable = true` to an existing field). Only truly new fields can be added to an existing index.
 
@@ -189,12 +201,13 @@ Azure Search cannot change existing field attributes (e.g., adding `IsFacetable 
 
 | Type | Source | Description |
 |------|--------|-------------|
-| `text` | Crawler | HTML spec page text chunks |
-| `table` | Crawler | HTML tables extracted from spec pages |
-| `diagram` | Crawler | Diagram descriptions from spec pages |
+| `text` | Crawler (legacy v1 index) | HTML spec page text chunks |
+| `table` | Crawler (legacy v1 index) | HTML tables extracted from spec pages |
+| `diagram` | Crawler (legacy v1 index) | Diagram descriptions from spec pages |
 | `nodeset` | Pipeline | Individual NodeSet nodes (ObjectType, Variable, Method, DataType) |
 | `nodeset_summary` | Pipeline | Per-spec + cross-spec aggregation statistics |
 | `nodeset_hierarchy` | Pipeline | Per-ObjectType docs with supertype chain and member counts |
+| `spec_section` | Pipeline | Per-section spec text from the Single Page HTML view (v2 index — replaces legacy `text`/`table`/`diagram`) |
 | `cloudlib_nodeset` | Pipeline | CloudLibrary NodeSet nodes |
 | `cloudlib_summary` | Pipeline | CloudLibrary per-spec aggregation docs |
 | `cloudlib_hierarchy` | Pipeline | CloudLibrary per-ObjectType hierarchy docs |
@@ -205,7 +218,14 @@ Azure Search cannot change existing field attributes (e.g., adding `IsFacetable 
 |-------|------|-----------|-----------|-------------|
 | `browse_name` | String | ✓ | | Node browse name |
 | `node_class` | String | ✓ | ✓ | ObjectType, Variable, Method, DataType, etc. |
-| `spec_part` | String | ✓ | ✓ | Companion spec name (DI, Pumps, Part3, etc.) |
+| `spec_part` | String | ✓ | ✓ | Companion spec name (DI, Pumps, Part3, etc.) — legacy v1 |
+| `spec_id` | String | ✓ | ✓ | v2 spec identifier (e.g., `OPC-10000-3`, `DI`) |
+| `spec_title` | String | | | v2 spec display name |
+| `section_id` | String | ✓ | | v2 section slug |
+| `section_number` | String | ✓ | | v2 section number (e.g., `5.6.2`) |
+| `section_path` | String | ✓ | | v2 canonical URL path (`/specs/{spec_id}/v{version}/{section}`) |
+| `breadcrumb` | Collection<String> | | | v2 section breadcrumb ancestors |
+| `figures` | Collection<String> | | | v2 figure sha256 hashes referenced from the section |
 | `spec_version` | String | ✓ | | Version path segment (v104, v105, v200) |
 | `parent_type` | String | ✓ | | Parent ObjectType browse name |
 | `modelling_rule` | String | ✓ | ✓ | Mandatory, Optional, MandatoryPlaceholder, etc. |
@@ -215,7 +235,7 @@ Azure Search cannot change existing field attributes (e.g., adding `IsFacetable 
 | `version_rank` | Int32 | ✓ | | 1 = latest, 2 = previous, 3 = older |
 | `source` | String | ✓ | ✓ | `opcfoundation` or `cloudlib` |
 | `namespace_uri` | String | ✓ | | OPC UA namespace URI |
-| `publication_date` | DateTimeOffset | ✓ | | CloudLib publication date |
+| `publication_date` | DateTimeOffset | ✓ | | Publication date (STS metadata or CloudLib) |
 | `popularity` | Int64 | ✓ | | Download count; drives scoring profile |
 | `in_opcfoundation_index` | Boolean | ✓ | ✓ | Namespace overlap flag for CloudLib-diff queries |
 | `title`, `description` | String | | | CloudLib metadata |

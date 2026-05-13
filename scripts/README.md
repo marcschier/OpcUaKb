@@ -36,9 +36,11 @@ SEARCH_API_KEY=<your-search-api-key> ./scripts/install-mcp.sh local
 
 ## Agent Deployment Scripts
 
-### `install-toolbox-and-agent.ps1` (PowerShell)
+### `install-toolbox-and-agent.ps1` (PowerShell) — *legacy*
 
-End-to-end automation for deploying the OPC UA Hosted Agent to **Azure AI Foundry** as a managed Hosted Agent using the **Responses protocol** and a **Foundry Toolbox** that wraps the MCP server. This replaces the legacy Bot Framework / Microsoft 365 Agents SDK deployment.
+> ⚠️ **This script is now legacy.** The Hosted Agent no longer uses a Foundry Toolbox — it connects directly to the MCP server via `ModelContextProtocol.Client`. The script still works (the Toolbox it provisions is harmless but unused). For new deployments, prefer the simpler `azd provision` + `azd deploy` flow described in [`src/OpcUaKb.HostedAgent/README.md`](../src/OpcUaKb.HostedAgent/README.md).
+
+End-to-end automation for deploying the OPC UA Hosted Agent to **Azure AI Foundry** as a managed Hosted Agent using the **Responses protocol**. Replaces the older Bot Framework / Microsoft 365 Agents SDK deployment.
 
 ```powershell
 .\scripts\install-toolbox-and-agent.ps1 `
@@ -46,7 +48,7 @@ End-to-end automation for deploying the OPC UA Hosted Agent to **Azure AI Foundr
     [-FoundryAccountName opcua-kb-foundry] `
     [-FoundryProjectName opcua-kb-project] `
     [-McpServerUrl https://opcua-kb-mcp-server.<env>.azurecontainerapps.io/] `
-    [-Location eastus] `
+    [-Location westus3] `
     [-AgentDir ..\src\OpcUaKb.HostedAgent] `
     [-SkipAzdInit] [-SkipProvision] `
     [-PublishAsApp] [-BindToTeams]
@@ -57,28 +59,28 @@ End-to-end automation for deploying the OPC UA Hosted Agent to **Azure AI Foundr
 1. Pre-flight: verifies `az`, `azd`, `azd ai agents` extension, agent dir + manifest, resolves MCP server URL.
 2. Auth: `az account set`, soft RBAC check (Azure AI Project Manager on the Foundry project), `azd auth login` for the Microsoft tenant.
 3. `azd ai agent init`: writes `azure.yaml` if missing.
-4. `azd provision`: creates the Foundry Toolbox declared in `agent.manifest.yaml` (the `kind: toolbox` resource) plus the agent identity + RBAC.
+4. `azd provision`: creates the Foundry account/project/ACR/gpt-4o (and the legacy Foundry Toolbox the agent no longer uses).
 5. `azd deploy`: builds the container in ACR remotely and creates a new agent version. Captures the agent endpoint.
 6. **Optional** `-PublishAsApp`: wraps the agent version in a Foundry Agent Application with a stable endpoint and dedicated Entra agent identity.
 7. **Optional** `-BindToTeams`: binds the Agent Application to a Teams channel via Foundry's Activity-bridge.
 8. Smoke test: invokes the agent with `azd ai agent invoke --verbose` and looks for tool-call traces.
 
-**Architecture (new):**
+**Architecture:**
 ```
 Teams / Web Chat → Foundry Agent Application (Activity bridge)
   → OpcUaKb.HostedAgent (Responses protocol container)
-    → Foundry Responses API (built-in tool loop)
-      → Foundry Toolbox "opcua-kb-tools"
-        → OpcUaKb.McpServer (Container App, still hosts the 11 tools)
-          → Azure AI Search
+    → ModelContextProtocol.Client.McpClient
+      → OpcUaKb.McpServer (Container App, 11 tools)
+        → Azure AI Search + Azure AI Foundry (RAG)
 ```
 
 **Prerequisites:**
 - `az` CLI (logged in to the right tenant)
 - `azd` CLI v1.24.0+ with the `azure.ai.agents` extension
-- An existing `rg-opcua-kb` resource group with `opcua-kb-foundry` AIServices account, MCP server Container App, and a `gpt-4o` model deployment (run `infra/deploy.sh` first)
+- An existing resource group with the MCP server Container App and a `gpt-4o` model deployment (run `infra/deploy.sh` first)
+- A Hosted-Agent-supported region for the Foundry project (westus3, westus, norwayeast, francecentral, japaneast)
 
-**Note:** The script uses **Python-direct invocation** of the Azure CLI on Windows to avoid `cmd.exe` truncating secrets containing special characters like `&` (carried over from `install-agent.ps1`).
+**Note:** The script uses **Python-direct invocation** of the Azure CLI on Windows to avoid `cmd.exe` truncating secrets containing special characters like `&`.
 
 ## Manual Configuration
 

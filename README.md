@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![.NET 10](https://img.shields.io/badge/.NET-10.0-purple)](https://dotnet.microsoft.com/download/dotnet/10.0)
 [![MCP](https://img.shields.io/badge/MCP-1.2-green)](https://modelcontextprotocol.io)
-[![Version](https://img.shields.io/badge/version-3.0-orange)](version.json)
+[![Version](https://img.shields.io/badge/version-4.0-orange)](version.json)
 
 <br clear="left"/>
 
@@ -18,7 +18,7 @@ An Azure AI Search agentic retrieval pipeline that exposes the complete OPC UA r
 
 🔧 **11 purpose-built MCP tools** — RAG Q&A, structured search, compliance validation, version comparison, and information model design suggestions — all accessible via a single MCP endpoint. AI agents can ask natural language questions, find specific ObjectTypes, check a NodeSet against a companion spec, or get help designing a new information model without leaving their workflow.
 
-🏢 **Microsoft 365 Copilot agent** — Use the Knowledge Base directly from Microsoft Teams and Microsoft 365 Copilot Chat. The hosted agent in [`src/OpcUaKb.HostedAgent/`](src/OpcUaKb.HostedAgent/) is a **Foundry Hosted Agent** using the **Responses protocol** + a **Foundry Toolbox** that wraps the MCP server, powered by the same Foundry GPT-4o + Azure AI Search RAG pipeline.
+🏢 **Microsoft 365 Copilot agent** — Use the Knowledge Base directly from Microsoft Teams and Microsoft 365 Copilot Chat. The hosted agent in [`src/OpcUaKb.HostedAgent/`](src/OpcUaKb.HostedAgent/) is a **Foundry Hosted Agent** using the **Responses protocol** + the **Microsoft Agent Framework**. It connects directly to the `OpcUaKb.McpServer` via `ModelContextProtocol.Client`, so each of the 11 MCP tools is a distinct AIFunction the model can call by name.
 
 🧬 **Type hierarchy resolution** — Cross-file ObjectType inheritance is fully resolved with alias and namespace normalization. Every ObjectType includes its complete supertype chain, declared member counts, and inherited member totals. This is the kind of deep structural insight that's tedious to extract manually from XML files.
 
@@ -179,36 +179,43 @@ https://<mcp-server-fqdn>/
 
 ## 🤖 Microsoft 365 Copilot Agent
 
-A **Foundry Hosted Agent** (`src/OpcUaKb.HostedAgent/`) lets you use the OPC UA Knowledge Base inside **Microsoft Teams** and **Microsoft 365 Copilot** as a conversational bot. It runs on Azure AI Foundry's managed agent runtime using the Responses protocol, consumes a Foundry Toolbox that wraps the MCP server, and bridges to Teams via Foundry's Activity protocol — no separate Bot Service registration needed.
+A **Foundry Hosted Agent** (`src/OpcUaKb.HostedAgent/`) lets you use the OPC UA Knowledge Base inside **Microsoft Teams** and **Microsoft 365 Copilot** as a conversational bot. It runs on Azure AI Foundry's managed agent runtime using the Responses protocol and connects directly to `OpcUaKb.McpServer` via `ModelContextProtocol.Client` — each MCP tool is exposed as a distinct `AIFunction` so GPT-4o can pick by name.
+
+> **Region constraint** — Foundry Hosted Agents are in preview and only available in select regions (e.g., **westus3**, westus, norwayeast, francecentral, japaneast). The core knowledge base (Search, Storage, MCP server, pipeline job) can live anywhere; the Hosted Agent project just needs to be in a supported region and calls the MCP server cross-region over HTTPS.
 
 ```bash
-# One command to deploy: provisions Toolbox, deploys agent container, publishes Agent Application
-.\scripts\install-toolbox-and-agent.ps1 -PublishAsApp -BindToTeams
+# Provision Foundry + deploy hosted agent in a supported region
+cd src/OpcUaKb.HostedAgent
+azd env new opcua-kb-w3
+azd env set AZURE_LOCATION westus3
+azd env set ENABLE_HOSTED_AGENTS true
+azd env set MCP_SERVER_URL https://<your-mcp-server-fqdn>/
+azd provision
+azd deploy
 ```
 
-The script provisions the Toolbox (declared as a `kind: toolbox` resource in `agent.manifest.yaml`), builds the agent container via ACR, deploys it to Foundry, and binds it to Microsoft Teams via the Activity-bridge.
+`azd provision` creates the Foundry account, project, ACR, App Insights, and the gpt-4o model deployment. `azd deploy` builds the container in ACR remotely and creates a new agent version with its own Entra agent identity. See [`src/OpcUaKb.HostedAgent/README.md`](src/OpcUaKb.HostedAgent/README.md) for full details.
 
 | Channel | Status |
 |---|---|
+| Foundry Playground (testing) | ✅ |
+| `azd ai agent invoke` (CLI) | ✅ |
 | Microsoft Teams (personal, group, channel) | ✅ via Foundry Agent Application + Activity bridge |
 | Microsoft 365 Copilot Chat | ✅ via Foundry Agent Application |
-| Foundry Playground (testing) | ✅ |
-
-See [`src/OpcUaKb.HostedAgent/README.md`](src/OpcUaKb.HostedAgent/README.md) for setup details, local development with `azd ai agent run`, and manual portal-based publishing.
 
 ## 💬 Local Development
 
 For local interactive testing, run the hosted agent against your Foundry project:
 
 ```bash
-# Run the agent locally — connects to the Foundry Toolbox in your project
+# Run the agent locally — connects directly to the MCP server over HTTPS
 cd src/OpcUaKb.HostedAgent
 azd auth login
 azd ai agent run                                    # starts the container locally on port 8088
 azd ai agent invoke --local "What is Part 9?"      # sends a test query
 ```
 
-The agent uses `DefaultAzureCredential` to authenticate against Foundry. Required env vars (see `.env.example`): `FOUNDRY_PROJECT_ENDPOINT`, `AZURE_AI_MODEL_DEPLOYMENT_NAME`, `TOOLBOX_NAME`.
+The agent uses `DefaultAzureCredential` to authenticate against Foundry. Required env vars (see `.env.example`): `FOUNDRY_PROJECT_ENDPOINT`, `AZURE_AI_MODEL_DEPLOYMENT_NAME`, `MCP_SERVER_URL`.
 
 ## ⚙️ Pipeline
 

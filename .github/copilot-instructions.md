@@ -12,15 +12,18 @@ dotnet run --project src/OpcUaKb.Pipeline
 # Run the custom MCP server (requires SEARCH_ENDPOINT and SEARCH_API_KEY)
 dotnet run --project src/OpcUaKb.McpServer
 
-# Run the hosted agent locally (requires Azure CLI login + an existing Foundry Toolbox)
-# See src/OpcUaKb.HostedAgent/README.md and scripts/install-toolbox-and-agent.ps1.
+# Run the hosted agent locally (requires Azure CLI login + MCP_SERVER_URL)
+# See src/OpcUaKb.HostedAgent/README.md.
 azd ai agent run --cwd src/OpcUaKb.HostedAgent
 
 # Validate Bicep infrastructure
 az bicep build --file infra/main.bicep
 
-# Deploy everything (idempotent)
-./infra/deploy.sh -s <subscription-id> -g rg-opcua-kb -p opcua-kb -l eastus
+# Deploy KB infrastructure (idempotent)
+./infra/deploy.sh -s <subscription-id> -g rg-opcua-kb -p opcua-kb -l swedencentral
+
+# Deploy Hosted Agent (requires a Hosted-Agent-supported region, e.g. westus3)
+cd src/OpcUaKb.HostedAgent && azd provision && azd deploy
 ```
 
 There are no unit tests — `OpcUaKb.Test` is a console app requiring live Azure credentials. CI validates compilation only.
@@ -28,16 +31,19 @@ There are no unit tests — `OpcUaKb.Test` is a console app requiring live Azure
 ## Architecture
 
 - **Single solution** (`OpcUaKnowledgeBase.slnx`) with 8 projects under `src/`
-- **Pipeline** (`OpcUaKb.Pipeline`): Top-level statements, sealed classes, no explicit namespaces. Three phases: crawl → index → nodeset. Runs as Azure Container Apps Job on a weekly cron.
+- **Pipeline** (`OpcUaKb.Pipeline`): Top-level statements, sealed classes, no explicit namespaces. Phases: spec_discovery → spec_download → image_fetch → github_fetch → nodeset_parse → spec_index → cloudlib. Runs as Azure Container Apps Job on a weekly cron. Crawls the per-spec `/specs/{id}` landing pages (Single Page HTML + STS XML + GitHub supplementary files).
 - **MCP Server** (`OpcUaKb.McpServer`): Custom MCP server with 11 tools (search_nodes, get_type_hierarchy, get_spec_summary, search_docs, search_docs_rag, count_nodes, list_specs, compare_versions, suggest_model, check_compliance, validate_nodeset). Uses `ModelContextProtocol` SDK with HTTP SSE (default) + stdio (`--stdio`) transports.
-- **Hosted Agent** (`OpcUaKb.HostedAgent`): Foundry Hosted Agent using Microsoft Agent Framework + Responses protocol. Reads tools from a Foundry Toolbox that wraps `OpcUaKb.McpServer`. Deployed via `azd deploy` (after `azd ai agent init` + `azd provision`); replaces the legacy Bot Framework custom engine agent.
-- **Infrastructure**: `infra/main.bicep` (Azure resources) + `infra/deploy.sh`. The Foundry-side agent + toolbox are NOT in Bicep; they're provisioned by `azd provision` / `azd deploy` from `src/OpcUaKb.HostedAgent/agent.manifest.yaml` (after `azd ai agent init` scaffolds `azure.yaml`).
-- **Index**: Azure AI Search `opcua-content-index` with `content_type` field distinguishing `text`, `table`, `diagram`, `nodeset`, `nodeset_summary`, and `nodeset_hierarchy` docs
-- **Structured fields**: NodeSet docs have `node_class`, `modelling_rule`, `browse_name`, `parent_type`, and `data_type` as filterable fields for structured queries
-- **Summary docs**: Pre-computed per-spec and cross-spec statistics (content_type=`nodeset_summary`) enable the KB to answer aggregation questions
-- **Hierarchy docs**: Per-ObjectType documents (content_type=`nodeset_hierarchy`) with supertype chain, declared/inherited member counts
+- **Hosted Agent** (`OpcUaKb.HostedAgent`): Foundry Hosted Agent using Microsoft Agent Framework + Responses protocol. Connects **directly** to `OpcUaKb.McpServer` via `ModelContextProtocol.Client` (`HttpClientTransport` + `McpClient.CreateAsync` + `ListToolsAsync`) so each of the 11 MCP tools is exposed as a distinct `McpClientTool` (`AIFunction`). Deployed via `azd deploy` (after `azd ai agent init` + `azd provision`); replaces the legacy Bot Framework custom engine agent. **Does NOT use a Foundry Toolbox** — earlier `GetToolboxToolsAsync` approach wrapped tools into one opaque `McpTool` invisible to GPT-4o.
+- **Infrastructure**: `infra/main.bicep` (Azure resources) + `infra/deploy.sh`. The Foundry-side Hosted Agent is NOT in Bicep; it's provisioned by `azd provision` / `azd deploy` from `src/OpcUaKb.HostedAgent/agent.manifest.yaml`.
+- **Region split**: Foundry Hosted Agents are preview-only in select regions (westus3, westus, norwayeast, francecentral, japaneast). The KB infrastructure (Search, Storage, MCP server, pipeline job) can be in any region. Current production: KB in **swedencentral** + Hosted Agent project in **westus3**.
+- **Index**: Azure AI Search `opcua-content-index-v2` (current). Legacy `opcua-content-index` (v1) is preserved for back-compat tools. `content_type` distinguishes `spec_section` (v2 per-section docs), `nodeset`, `nodeset_summary`, `nodeset_hierarchy`, `cloudlib_*`, and legacy `text`/`table`/`diagram`.
+- **v2 structured fields**: `spec_id`, `spec_title`, `section_id`, `section_number`, `section_path`, `breadcrumb` (Collection), `figures` (Collection), `publication_date`. Doc key = `Base64Url("{spec_id}|{version}|{section_slug or section_number}")` — Azure Search rejects `/` and `.` in keys.
+- **NodeSet structured fields**: `node_class`, `modelling_rule`, `browse_name`, `parent_type`, `data_type` for structured queries
+- **Summary docs**: Pre-computed per-spec and cross-spec statistics (`content_type=nodeset_summary`)
+- **Hierarchy docs**: Per-ObjectType documents (`content_type=nodeset_hierarchy`) with supertype chain, declared/inherited member counts
 - **Type hierarchy**: Cross-file ObjectType inheritance resolution with alias/namespace normalization, memoized supertype chain traversal, and completeness tracking
 - **API version**: Azure AI Search agentic retrieval uses `2025-11-01-preview`. Knowledge sources use `kind: "web"` with `webParameters.domains.allowedDomains`.
+- **Storage**: MI-only (`allowSharedKeyAccess: false`). All Pipeline + Indexer code takes `BlobServiceClient` via `DefaultAzureCredential(new Uri($"https://{name}.blob.core.windows.net"))`. There is **no** `STORAGE_CONNECTION_STRING` env var.
 
 ## Azure Resource Configuration
 
@@ -50,8 +56,10 @@ These are the **production values** — do not revert to lower defaults:
 | GPT-4o capacity | `30` | |
 | Container Apps Job timeout | `86400` (24 hours) | Full crawl + index takes ~17 hours |
 | Cron schedule | `0 2 * * 0` | Weekly Sunday 2am UTC |
-| Resource group | `rg-opcua-kb` | Region: eastus |
+| KB resource group | `rg-opcua-kb` | Current production region: **swedencentral** |
+| Hosted Agent resource group | `rg-opcua-kb-w3` | Hosted Agent in **westus3** (preview region constraint) |
 | KB retrieval reasoning | `medium` | Upgraded from low for better query planning |
+| Storage auth | Managed Identity only | `allowSharedKeyAccess: false` |
 
 ## HttpClient Usage — Critical Pattern
 
@@ -85,9 +93,11 @@ Pattern to follow:
 
 ## Azure AI Search Schema — Keep In Sync
 
-The index schema is duplicated in two places and **must be kept in sync**:
+The current production index is **`opcua-content-index-v2`**. The schema is duplicated in two places and **must be kept in sync**:
 - `OpcUaKb.Pipeline/Program.cs` → `EnsureIndexAsync()`
 - `OpcUaKb.Indexer/Program.cs` → `CreateIndexAsync()`
+
+The v1 index (`opcua-content-index`) is no longer written to but is preserved in code (default for `SearchService.DefaultIndexName` was bumped to v2 in 4.0).
 
 **Important**: Azure Search cannot change existing field attributes (e.g., adding `IsFacetable = true` to an already-created field). Only truly new fields can be added to an existing index.
 
@@ -123,10 +133,11 @@ https://{search}.search.windows.net/knowledgebases/{kb}/mcp?api-version=2025-11-
 - Top-level statements for all console apps (Pipeline, Setup, Test, McpServer, HostedAgent)
 - Sealed classes preferred
 - No explicit namespaces in Pipeline project
-- NuGet: `Azure.Search.Documents` 11.8.0-beta.1, `Azure.AI.OpenAI` 2.9.0-beta.1, `ModelContextProtocol` 1.2.0, `Microsoft.Agents.AI.Foundry.Hosting` 1.3.0-preview.260423.1 (HostedAgent only), `Azure.AI.Projects` 2.1.0-beta.1 (HostedAgent only)
+- NuGet: `Azure.Search.Documents` 11.8.0-beta.1, `Azure.AI.OpenAI` 2.9.0-beta.1, `ModelContextProtocol.AspNetCore` 1.2.0 (server), `ModelContextProtocol` 1.2.0 (client — HostedAgent), `Microsoft.Agents.AI.Foundry.Hosting` 1.3.0-preview.260423.1 (HostedAgent), `Azure.AI.Projects` 2.1.0-beta.1 (HostedAgent)
 - Structured logging: `[PHASE] Key=Value` format for KQL dashboard queries
 - Pipeline status tracked in `_pipeline-status.json` blob
 - MCP server uses static tool classes with `[McpServerToolType]` / `[McpServerTool]` attributes
-- HostedAgent uses Agent Framework: `projectClient.AsAIAgent(model, instructions, tools)` with tools fetched via `projectClient.GetToolboxToolsAsync(toolboxName)` — Foundry executes tool calls server-side, no manual loop
-- Foundry Toolbox is declared as a `kind: toolbox` resource in `agent.manifest.yaml` and auto-provisioned by `azd provision`
-- Tool implementations are shared between `OpcUaKb.McpServer` (the actual host) and `OpcUaKb.Core` (definitions). The Toolbox proxies to the MCP server on Container Apps.
+- HostedAgent uses Agent Framework with **direct MCP client**: `var mcpClient = await McpClient.CreateAsync(new HttpClientTransport(...))` → `var tools = await mcpClient.ListToolsAsync()` → `projectClient.AsAIAgent(model, instructions, tools: [.. tools])`. The hosting library runs the tool-call loop locally in the container. **Do NOT use `GetToolboxToolsAsync`** — it returns one opaque `McpTool` wrapper invisible to the model.
+- Tool implementations live in `OpcUaKb.Core/Tools/` and are hosted by `OpcUaKb.McpServer`. The HostedAgent and any other MCP client consume them over HTTPS.
+- Storage uses `DefaultAzureCredential` only — there is no `STORAGE_CONNECTION_STRING` env var. Pipeline MI must have `Storage Blob Data Contributor` on the storage account.
+- Linux-vs-Windows gotcha: `Uri.TryCreate("/path", UriKind.Absolute, out _)` returns `true` on Linux (scheme `file://`) but `false` on Windows. Use `UrlHelper.Absolutize` for URL absolutization.

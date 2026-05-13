@@ -6,24 +6,28 @@ All Azure resources are defined in [`main.bicep`](main.bicep) and deployed via [
 
 | Resource | Derived Name | Purpose |
 |----------|-------------|---------|
-| AI Search (Standard) | `{prefix}-search` | Search index + knowledge base |
+| AI Search (Standard) | `{prefix}-search` | Search index (`opcua-content-index-v2`) + knowledge base |
 | Azure AI Foundry | `{prefix}-foundry` | AIServices account + default project; GPT-4o (30 TPM) + text-embedding-3-large (120 TPM). MI auth. |
-| Blob Storage | `{prefix}storage` | Crawled content storage |
+| Blob Storage | `{prefix}storage` | Crawled content storage. **MI-only auth** (`allowSharedKeyAccess: false`) — pipeline + indexer use `DefaultAzureCredential`. |
 | Container Registry | `{prefix}registry` | Pipeline + MCP server Docker images |
 | Container Apps Environment | `{prefix}-env` | Shared environment for job + app |
-| Container Apps Job | `{prefix}-pipeline-job` | Weekly crawl + index (cron: `0 2 * * 0`, 24h timeout). System MI + Cognitive Services OpenAI User role. |
+| Container Apps Job | `{prefix}-pipeline-job` | Weekly crawl + index (cron: `0 2 * * 0`, 24h timeout). System MI + Cognitive Services OpenAI User role + Storage Blob Data Contributor on the storage account. |
 | Container App | `{prefix}-mcp-server` | MCP server with 11 tools + RAG (scale 0–2, HTTP auto-scale). System MI + Cognitive Services OpenAI User role. |
 | Log Analytics Workspace | `{prefix}-logs` | Pipeline and MCP server log collection |
 | Azure Monitor Workbook | — | Pipeline dashboard (crawl/index/error tracking) |
 
-> **Note**: The OPC UA Expert agent (`OpcUaKb.HostedAgent`) is **not** in Bicep — it's a Foundry Hosted Agent provisioned by `azd provision` / `azd deploy` (after `azd ai agent init`) from `src/OpcUaKb.HostedAgent/agent.manifest.yaml`. The Foundry Toolbox that wraps the MCP server is declared as a `kind: toolbox` resource in that manifest and auto-provisioned by `azd provision`. See `scripts/install-toolbox-and-agent.ps1`.
+> **Note**: The OPC UA Expert agent (`OpcUaKb.HostedAgent`) is **not** in this Bicep — it's a Foundry Hosted Agent provisioned by `azd provision` / `azd deploy` from `src/OpcUaKb.HostedAgent/`. The Hosted Agent connects to the MCP server here over HTTPS via `MCP_SERVER_URL` — no Foundry Toolbox indirection.
+>
+> **Region split**: Foundry Hosted Agents are preview-only in select regions (westus3, westus, norwayeast, francecentral, japaneast). The KB infrastructure (this Bicep) can be in any region — typical deployments use **swedencentral** for the KB + **westus3** for the Hosted Agent project.
 
 ## Deployment
 
 ### Which script to run
 
 - **Existing infra (Search, Foundry, Storage, ACR, Container Apps Env, pipeline job, MCP server, Log Analytics, Workbook)** — use `infra/deploy.sh`. Deploys `main.bicep`.
-- **Foundry Hosted Agent + Toolbox + Teams binding** — use `scripts/install-toolbox-and-agent.ps1`. Uses `azd ai agent` to provision the Toolbox declared in `agent.manifest.yaml`, build the agent container in ACR, deploy it to Foundry's managed runtime, optionally publish as an Agent Application, and bind to Teams via Foundry's Activity-bridge.
+- **Foundry Hosted Agent** — `cd src/OpcUaKb.HostedAgent && azd provision && azd deploy`. The agent provisions its own Foundry account, project, ACR, and gpt-4o deployment in a Hosted-Agent-supported region (e.g., westus3), then deploys the container. The agent calls the MCP server (deployed by `infra/deploy.sh`) cross-region via `MCP_SERVER_URL`. See [`src/OpcUaKb.HostedAgent/README.md`](../src/OpcUaKb.HostedAgent/README.md).
+
+> The legacy `scripts/install-toolbox-and-agent.ps1` is no longer the recommended path — the Hosted Agent no longer uses a Foundry Toolbox. Pure `azd provision` + `azd deploy` is sufficient.
 
 ### One-command deployment
 
@@ -32,7 +36,7 @@ All Azure resources are defined in [`main.bicep`](main.bicep) and deployed via [
   -s <subscription-id> \
   -g rg-opcua-kb \
   -p opcua-kb \
-  -l eastus
+  -l swedencentral
 ```
 
 | Flag | Description | Default |
@@ -40,7 +44,7 @@ All Azure resources are defined in [`main.bicep`](main.bicep) and deployed via [
 | `-s, --subscription` | Azure subscription ID | (required) |
 | `-g, --resource-group` | Resource group name | `rg-opcua-kb` |
 | `-p, --prefix` | Resource name prefix | `opcua-kb` |
-| `-l, --location` | Azure region | `eastus` |
+| `-l, --location` | Azure region | `eastus` (override to `swedencentral` for current production) |
 
 The script is **idempotent** — safe to run multiple times. It performs:
 1. Resource group creation
@@ -69,7 +73,7 @@ The script is **idempotent** — safe to run multiple times. It performs:
 6. **Container Apps Environment** — Log Analytics integration
 7. **Pipeline Job** — Container Apps Job with cron schedule, MI + secrets
 8. **MCP Server** — Container App with ingress, scale-to-zero, rate limiting env vars
-9. **Role Assignments** — `Cognitive Services OpenAI User` for pipeline + MCP server managed identities
+9. **Role Assignments** — `Cognitive Services OpenAI User` for pipeline + MCP server managed identities; **`Storage Blob Data Contributor`** for the pipeline MI (storage is MI-only — shared-key auth disabled)
 10. **Azure Monitor Workbook** — Pipeline dashboard
 11. **Outputs** — endpoints + connection details (see *Bicep Outputs* below)
 
@@ -130,4 +134,4 @@ GitHub Actions workflow (`.github/workflows/ci.yml`):
 - **Push/PR to main** — build + compile all projects (full git history for NBGV)
 - **Push to main** — build both Docker images (pipeline + MCP server), push to GHCR with SemVer tags
 
-Container image tags: `<version>` (e.g., `3.0.0`) + `latest` + `<sha>`
+Container image tags: `<version>` (e.g., `4.0.0`) + `latest` + `<sha>`
