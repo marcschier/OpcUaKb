@@ -18,7 +18,7 @@ An Azure AI Search agentic retrieval pipeline that exposes the complete OPC UA r
 
 🔧 **11 purpose-built MCP tools** — RAG Q&A, structured search, compliance validation, version comparison, and information model design suggestions — all accessible via a single MCP endpoint. AI agents can ask natural language questions, find specific ObjectTypes, check a NodeSet against a companion spec, or get help designing a new information model without leaving their workflow.
 
-🏢 **Microsoft 365 Copilot agent** — Use the Knowledge Base directly from Microsoft Teams and Microsoft 365 Copilot Chat. The hosted agent in [`src/OpcUaKb.HostedAgent/`](src/OpcUaKb.HostedAgent/) is a **Foundry Hosted Agent** using the **Responses protocol** + the **Microsoft Agent Framework**. It connects directly to the `OpcUaKb.McpServer` via `ModelContextProtocol.Client`, so each of the 15 MCP tools is a distinct AIFunction the model can call by name.
+🏢 **Microsoft 365 Copilot agent** — Use the Knowledge Base directly from Microsoft Teams and Microsoft 365 Copilot Chat. The hosted agent in [`src/OpcUaKb.HostedAgent/`](src/OpcUaKb.HostedAgent/) is a **Foundry Hosted Agent** using the **Responses protocol** + the **Microsoft Agent Framework**. It connects directly to the `OpcUaKb.McpServer` via `ModelContextProtocol.Client`, so each of the 17 MCP tools is a distinct AIFunction the model can call by name.
 
 🧬 **Type hierarchy resolution** — Cross-file ObjectType inheritance is fully resolved with alias and namespace normalization. Every ObjectType includes its complete supertype chain, declared member counts, and inherited member totals. This is the kind of deep structural insight that's tedious to extract manually from XML files.
 
@@ -43,7 +43,7 @@ graph TD
     Blob --> NodeSet["NodeSet XML Parser<br/>+ Type Hierarchy"]
     Chunker --> Index["Search Index<br/>(vectors + text + structured fields)"]
     NodeSet --> |"nodes + hierarchy + summaries"| Index
-    Index --> McpServer["MCP Server<br/>(15 tools + RAG)"]
+    Index --> McpServer["MCP Server<br/>(17 tools + RAG)"]
     Index --> KB["Knowledge Base<br/>(Azure AI Foundry + GPT-4o)"]
     KB --> McpServer
     McpServer --> Clients["Copilot CLI / Claude Desktop<br/>/ AI Agents"]
@@ -51,7 +51,7 @@ graph TD
 
 ## 🔌 MCP Tools
 
-The MCP server exposes 15 tools — structured search, RAG Q&A, compliance validation, modelling, and the profile graph:
+The MCP server exposes 17 tools — structured search, RAG Q&A, compliance validation, modelling, the profile graph, and live-server semantic projection:
 
 ### 🔍 Search & Discovery
 
@@ -161,6 +161,27 @@ Backed by the `profiles` pipeline phase, which crawls [profiles.opcfoundation.or
 </tr>
 </table>
 
+### 🔄 Live Server → Companion-Spec Projection
+
+These tools accept a full NodeSet2 export from a live OPC UA server, analyze names, descriptions, data types and structure, ignore OPC UA Core infrastructure, and create one or more high-confidence semantic projections onto the latest official companion specifications. The workflow is asynchronous because large AddressSpaces can require extensive model search and semantic analysis.
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+**`create_companion_projection`** — Submit a NodeSet through the same inline / `blob:` / allow-listed URL input modes. Stages the input privately, queues a durable mapping job, and returns a job ID. Target NodeIds are deterministic; unrelated strong matches may produce multiple companion-spec projections for the same source node.
+
+</td>
+<td width="50%" valign="top">
+
+**`get_companion_projection`** — Poll job progress and retrieve the generated NodeSet2 XML, canonical node-to-node mapping JSON, CSV mapping, reports, and ZIP bundle. Results include private blob references and authenticated streaming download URLs.
+
+</td>
+</tr>
+</table>
+
+The generated NodeSet contains instances with exact `HasTypeDefinition` and `<RequiredModel>` references. Only high-confidence mappings are emitted; medium-confidence candidates and unresolved nodes stay in the report for review. Gateway binding direction is inferred from source access metadata: reads are forwarded, writes require write access, and mapped Methods are forwarded.
+
 ### Version Filtering
 
 All search tools default to the **latest spec version** with automatic fallback to older versions if too few results:
@@ -181,15 +202,19 @@ All search tools default to the **latest spec version** with automatic fallback 
 
 The script is idempotent. See [`infra/README.md`](infra/README.md) for full resource details, Bicep structure, and monitoring.
 
+`infra/deploy.sh` provisions a separate MCP application key instead of exposing the Azure AI Search admin key to custom-MCP clients. It preserves the key on idempotent redeploys and writes the local copy to ignored `.session/mcp-access-key.txt`.
+
 ## 📦 Quick Install
 
 ```bash
 # Hosted mode (recommended) — configures Copilot CLI + Claude Desktop
-.\scripts\install-mcp.ps1 -Mode hosted -ApiKey <your-search-api-key>
+.\scripts\install-mcp.ps1 -Mode hosted `
+  -SearchApiKey <your-search-api-key> `
+  -McpApiKey <your-mcp-application-key>
 
 # Or install as local dotnet tool
 dotnet tool install -g OpcUaKb.McpServer
-.\scripts\install-mcp.ps1 -Mode local -ApiKey <your-search-api-key>
+.\scripts\install-mcp.ps1 -Mode local -SearchApiKey <your-search-api-key>
 ```
 
 See [`scripts/README.md`](scripts/README.md) for manual configuration and all client setup options.

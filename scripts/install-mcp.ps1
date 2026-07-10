@@ -5,7 +5,8 @@
 param(
     [ValidateSet("hosted", "local")]
     [string]$Mode = "hosted",
-    [string]$ApiKey = $env:SEARCH_API_KEY
+    [string]$SearchApiKey = $env:SEARCH_API_KEY,
+    [string]$McpApiKey = $env:MCP_API_KEY
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,9 +15,13 @@ $McpServerUrl = "https://opcua-kb-mcp-server.lemoncliff-5369bab2.westus3.azureco
 $KbMcpUrl = "https://opcua-kb-search.search.windows.net/knowledgebases/opcua-kb-kb/mcp?api-version=2025-11-01-preview"
 $SearchEndpoint = "https://opcua-kb-search.search.windows.net"
 
-if ([string]::IsNullOrEmpty($ApiKey)) {
-    $ApiKey = Read-Host "Enter Search API key"
-    if ([string]::IsNullOrEmpty($ApiKey)) { throw "API key is required." }
+if ([string]::IsNullOrEmpty($SearchApiKey)) {
+    $SearchApiKey = Read-Host "Enter Azure AI Search API key (for the KB endpoint)"
+    if ([string]::IsNullOrEmpty($SearchApiKey)) { throw "Search API key is required." }
+}
+if ($Mode -eq "hosted" -and [string]::IsNullOrEmpty($McpApiKey)) {
+    $McpApiKey = Read-Host "Enter MCP application API key"
+    if ([string]::IsNullOrEmpty($McpApiKey)) { throw "MCP application API key is required." }
 }
 
 # ── Install dotnet tool (for local mode) ─────────────────────────────
@@ -60,7 +65,7 @@ $servers = @{
     "opcua-kb" = @{
         type = "http"
         url = $KbMcpUrl
-        headers = @{ "api-key" = $ApiKey }
+        headers = @{ "api-key" = $SearchApiKey }
     }
 }
 
@@ -68,7 +73,7 @@ if ($Mode -eq "hosted") {
     $servers["opcua-kb-tools"] = @{
         type = "http"
         url = $McpServerUrl
-        headers = @{ "api-key" = $ApiKey }
+        headers = @{ "api-key" = $McpApiKey }
     }
 } else {
     $servers["opcua-kb-tools"] = @{
@@ -76,7 +81,7 @@ if ($Mode -eq "hosted") {
         args = @("--stdio")
         env = @{
             SEARCH_ENDPOINT = $SearchEndpoint
-            SEARCH_API_KEY = $ApiKey
+            SEARCH_API_KEY = $SearchApiKey
         }
     }
 }
@@ -94,7 +99,7 @@ if (Test-Path (Split-Path $claudePath -Parent)) {
             args = @("--stdio")
             env = @{
                 SEARCH_ENDPOINT = $SearchEndpoint
-                SEARCH_API_KEY = $ApiKey
+                SEARCH_API_KEY = $SearchApiKey
             }
         }
     }
@@ -116,6 +121,8 @@ Write-Host "  KB Endpoint:   $KbMcpUrl" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  Available tools: search_nodes, get_type_hierarchy, get_spec_summary,"
 Write-Host "    search_docs, count_nodes, validate_nodeset, compare_versions,"
-Write-Host "    check_compliance, suggest_model"
+Write-Host "    check_compliance, suggest_model, list_profile_groups, get_profile,"
+Write-Host "    query_profiles, check_profile_conformance, create_companion_projection,"
+Write-Host "    get_companion_projection"
 Write-Host ""
 Write-Host "════════════════════════════════════════════════════════════" -ForegroundColor Green

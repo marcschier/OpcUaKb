@@ -28,6 +28,11 @@ param cloudLibUsername string = ''
 @secure()
 param cloudLibPassword string = ''
 
+@description('Independent application API key for MCP read, upload, mapping submission, and artifact download. Do not reuse the Azure AI Search admin key.')
+@secure()
+@minLength(32)
+param mcpAccessKey string
+
 @description('When true, set storage publicNetworkAccess=Disabled and require VNet/private-endpoint access only. Toggle on after the first pipeline run has validated the deployment end-to-end.')
 param lockdownStorage bool = false
 
@@ -40,6 +45,8 @@ var acrName = replace('${prefix}registry', '-', '')
 var envName = '${prefix}-env'
 var jobName = '${prefix}-pipeline-job'
 var mcpAppName = '${prefix}-mcp-server'
+var mappingWorkerName = '${prefix}-mapping-worker'
+var mappingQueueName = 'model-mapping-jobs'
 var logAnalyticsName = '${prefix}-logs'
 var workbookName = guid(resourceGroup().id, 'opcua-pipeline-dashboard')
 
@@ -179,6 +186,18 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   }
 }
 
+resource queueService 'Microsoft.Storage/storageAccounts/queueServices@2023-05-01' = {
+  parent: storageAccount
+  name: 'default'
+  properties: {}
+}
+
+resource mappingQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-05-01' = {
+  parent: queueService
+  name: mappingQueueName
+  properties: {}
+}
+
 // ── 3a. VNet + subnets for the workload-profile environment ─────────
 resource vnet 'Microsoft.Network/virtualNetworks@2023-11-01' = {
   name: vnetName
@@ -281,6 +300,59 @@ resource storagePrivateEndpointDnsGroup 'Microsoft.Network/privateEndpoints/priv
         name: 'blob'
         properties: {
           privateDnsZoneId: blobPrivateDnsZone.id
+        }
+      }
+    ]
+  }
+}
+
+// ── 3d. Private endpoint + DNS for the storage queue service ─────────
+resource queuePrivateDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = {
+  #disable-next-line no-hardcoded-env-urls
+  name: 'privatelink.queue.core.windows.net'
+  location: 'global'
+}
+
+resource queuePrivateDnsZoneLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
+  parent: queuePrivateDnsZone
+  name: '${vnetName}-link'
+  location: 'global'
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: {
+      id: vnet.id
+    }
+  }
+}
+
+resource storageQueuePrivateEndpoint 'Microsoft.Network/privateEndpoints@2023-11-01' = {
+  name: '${prefix}-storage-queue-pe'
+  location: location
+  properties: {
+    subnet: {
+      id: peSubnet.id
+    }
+    privateLinkServiceConnections: [
+      {
+        name: 'queue'
+        properties: {
+          privateLinkServiceId: storageAccount.id
+          groupIds: ['queue']
+        }
+      }
+    ]
+  }
+}
+
+resource storageQueuePrivateEndpointDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-11-01' = {
+  parent: storageQueuePrivateEndpoint
+  name: 'queue-dns-zone-group'
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'queue'
+        properties: {
+          privateDnsZoneId: queuePrivateDnsZone.id
         }
       }
     ]
@@ -471,6 +543,10 @@ resource mcpServer 'Microsoft.App/containerApps@2024-03-01' = {
           name: 'search-api-key'
           value: search.listAdminKeys().primaryKey
         }
+        {
+          name: 'mcp-access-key'
+          value: mcpAccessKey
+        }
       ]
     }
     template: {
@@ -503,7 +579,19 @@ resource mcpServer 'Microsoft.App/containerApps@2024-03-01' = {
             }
             {
               name: 'MCP_API_KEY'
-              secretRef: 'search-api-key'
+              secretRef: 'mcp-access-key'
+            }
+            {
+              name: 'MCP_UPLOAD_KEY'
+              secretRef: 'mcp-access-key'
+            }
+            {
+              name: 'MCP_ARTIFACT_KEY'
+              secretRef: 'mcp-access-key'
+            }
+            {
+              name: 'MCP_MAPPING_KEY'
+              secretRef: 'mcp-access-key'
             }
             {
               name: 'MCP_REQUIRE_AUTH'
@@ -541,6 +629,116 @@ resource mcpServer 'Microsoft.App/containerApps@2024-03-01' = {
   // is on. Force ordering.
   dependsOn: [
     storagePrivateEndpointDnsGroup
+  ]
+}
+
+// ── 8b. Queued model-mapping worker ──────────────────────────────────
+// No ingress: replicas are activated only by the Azure Queue KEDA rule.
+// The 2025-01-01 stable API exposes custom.scale.identity for managed-
+// identity scaler authentication, avoiding a storage connection string.
+resource mappingWorker 'Microsoft.App/containerApps@2025-01-01' = {
+  name: mappingWorkerName
+  location: location
+  identity: {
+    type: 'SystemAssigned'
+  }
+  properties: {
+    environmentId: containerEnv.id
+    workloadProfileName: 'Consumption'
+    configuration: {
+      activeRevisionsMode: 'Single'
+      registries: [
+        {
+          server: acr.properties.loginServer
+          identity: 'system'
+        }
+      ]
+      secrets: [
+        {
+          // Temporary until the mapping worker's Search client uses its MI.
+          name: 'search-api-key'
+          value: search.listAdminKeys().primaryKey
+        }
+      ]
+    }
+    template: {
+      containers: [
+        {
+          name: 'mapping-worker'
+          image: mcpImage
+          // Fresh deployments provision the ACR and role assignments in this
+          // same template. Use a harmless public-image placeholder until the
+          // image has been built and AcrPull has propagated; deploy.sh then
+          // reruns Bicep with pipelineImage set and switches to worker mode.
+          command: empty(pipelineImage) ? [
+            '/bin/sh'
+          ] : [
+            'dotnet'
+          ]
+          args: empty(pipelineImage) ? [
+            '-c'
+            'while true; do sleep 3600; done'
+          ] : [
+            'OpcUaKb.McpServer.dll'
+            '--mapping-worker'
+          ]
+          resources: {
+            cpu: json('2')
+            memory: '4Gi'
+          }
+          env: [
+            {
+              name: 'STORAGE_ACCOUNT_NAME'
+              value: storageAccount.name
+            }
+            {
+              name: 'MAPPING_QUEUE_NAME'
+              value: mappingQueueName
+            }
+            {
+              name: 'MAPPING_PREFIX'
+              value: 'model-mappings/jobs'
+            }
+            {
+              name: 'SEARCH_ENDPOINT'
+              value: 'https://${search.name}.search.windows.net'
+            }
+            {
+              // Temporary backward compatibility; Search RBAC is also assigned.
+              name: 'SEARCH_API_KEY'
+              secretRef: 'search-api-key'
+            }
+            {
+              name: 'AOAI_ENDPOINT'
+              value: foundry.properties.endpoint
+            }
+          ]
+        }
+      ]
+      scale: {
+        minReplicas: 0
+        maxReplicas: 2
+        rules: [
+          {
+            name: 'mapping-queue'
+            custom: {
+              type: 'azure-queue'
+              metadata: {
+                accountName: storageAccount.name
+                queueName: mappingQueueName
+                queueLength: '1'
+              }
+              identity: 'system'
+            }
+          }
+        ]
+      }
+    }
+  }
+  dependsOn: [
+    mappingQueue
+    storagePrivateEndpointDnsGroup
+    storageQueuePrivateEndpointDnsGroup
   ]
 }
 
@@ -582,6 +780,16 @@ resource mcpServerFoundryRoleAssignment 'Microsoft.Authorization/roleAssignments
   }
 }
 
+resource mappingWorkerFoundryRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(mappingWorker.id, foundry.id, cognitiveServicesOpenAIUserRole)
+  scope: foundry
+  properties: {
+    principalId: mappingWorker.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: cognitiveServicesOpenAIUserRole
+  }
+}
+
 // Storage Blob Data Contributor — pipeline job MI → storage account.
 // Required because the storage account has allowSharedKeyAccess=false;
 // the pipeline authenticates with DefaultAzureCredential at runtime.
@@ -613,6 +821,60 @@ resource mcpServerStorageBlobContributor 'Microsoft.Authorization/roleAssignment
   }
 }
 
+resource mappingWorkerStorageBlobContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(mappingWorker.id, storageAccount.id, 'StorageBlobDataContributor')
+  scope: storageAccount
+  properties: {
+    principalId: mappingWorker.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: storageBlobDataContributorRole
+  }
+}
+
+// Storage Queue Data Contributor — the MCP server enqueues jobs and the
+// worker's runtime and KEDA scaler consume them using managed identity.
+var storageQueueDataContributorRole = subscriptionResourceId(
+  'Microsoft.Authorization/roleDefinitions',
+  '974c5e8b-45b9-4653-ba55-5f855dd0fb88'
+)
+
+resource mcpServerStorageQueueContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(mcpServer.id, storageAccount.id, 'StorageQueueDataContributor')
+  scope: storageAccount
+  properties: {
+    principalId: mcpServer.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: storageQueueDataContributorRole
+  }
+}
+
+resource mappingWorkerStorageQueueContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(mappingWorker.id, storageAccount.id, 'StorageQueueDataContributor')
+  scope: storageAccount
+  properties: {
+    principalId: mappingWorker.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: storageQueueDataContributorRole
+  }
+}
+
+// Search Index Data Reader — allows the worker to use Search data-plane
+// operations with managed identity once the application client is integrated.
+var searchIndexDataReaderRole = subscriptionResourceId(
+  'Microsoft.Authorization/roleDefinitions',
+  '1407120a-92aa-4202-b7e9-c0e197c71c8f'
+)
+
+resource mappingWorkerSearchIndexDataReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(mappingWorker.id, search.id, 'SearchIndexDataReader')
+  scope: search
+  properties: {
+    principalId: mappingWorker.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: searchIndexDataReaderRole
+  }
+}
+
 // AcrPull — both the pipeline job MI and the MCP server MI need to pull
 // images from the registry. Local auth (admin user) is disabled on the
 // ACR, so this role assignment is the ONLY way images can be pulled.
@@ -636,6 +898,16 @@ resource mcpServerAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' =
   scope: acr
   properties: {
     principalId: mcpServer.identity.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: acrPullRole
+  }
+}
+
+resource mappingWorkerAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(mappingWorker.id, acr.id, 'AcrPull')
+  scope: acr
+  properties: {
+    principalId: mappingWorker.identity.principalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: acrPullRole
   }
@@ -712,5 +984,8 @@ output acrLoginServer string = acr.properties.loginServer
 output mcpEndpoint string = 'https://${search.name}.search.windows.net/knowledgebases/${prefix}-kb/mcp?api-version=2025-11-01-preview'
 
 output mcpServerEndpoint string = 'https://${mcpServer.properties.configuration.ingress.fqdn}'
+output mappingWorkerName string = mappingWorker.name
+output mappingWorkerPrincipalId string = mappingWorker.identity.principalId
 output vnetId string = vnet.id
 output storagePrivateEndpointId string = storagePrivateEndpoint.id
+output storageQueuePrivateEndpointId string = storageQueuePrivateEndpoint.id

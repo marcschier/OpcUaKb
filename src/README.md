@@ -7,7 +7,7 @@ All projects target .NET 10 with nullable enabled and implicit usings.
 | Project | Type | Description |
 |---------|------|-------------|
 | [`OpcUaKb.Pipeline`](OpcUaKb.Pipeline/) | Console (Container Apps Job) | Combined crawl + index + NodeSet parse + CloudLib pipeline |
-| [`OpcUaKb.McpServer`](OpcUaKb.McpServer/) | Web (Container App) | MCP server with 15 tools — search, RAG Q&A, compliance, modelling, profile graph + conformance (HTTP/SSE + stdio) |
+| [`OpcUaKb.McpServer`](OpcUaKb.McpServer/) | Web (Container App) | MCP server with 17 tools — search, RAG Q&A, compliance, modelling, profile graph/conformance, and live-server companion projection (HTTP/SSE + stdio) |
 | [`OpcUaKb.HostedAgent`](OpcUaKb.HostedAgent/) | Web (Foundry Hosted Agent) | Microsoft Agent Framework agent using the Responses protocol; connects directly to `OpcUaKb.McpServer` via `ModelContextProtocol.Client` so each MCP tool is a distinct `AIFunction`. Replaces the legacy Bot Framework agent. |
 | [`OpcUaKb.Core`](OpcUaKb.Core/) | Library | Shared `KbService` (KB retrieve + GPT-4o synthesis), `ProfileGraphService`, and tool implementations used by McpServer |
 | [`OpcUaKb.Setup`](OpcUaKb.Setup/) | Console | Creates Web Knowledge Source, Knowledge Base, verifies MCP endpoint |
@@ -88,7 +88,7 @@ az containerapp job start --name <prefix>-pipeline-job --resource-group <rg>
 
 ## MCP Server
 
-The MCP server is the single endpoint for all 15 tools including RAG Q&A. It connects to Azure AI Search for structured queries and to Azure AI Foundry (GPT-4o) for natural language answer synthesis.
+The MCP server is the single endpoint for all 17 tools including RAG Q&A and asynchronous live-server companion projection. It connects to Azure AI Search for structured queries and to Azure AI Foundry (GPT-4o) for natural language answer synthesis.
 
 ### Transports
 
@@ -107,7 +107,7 @@ The MCP server is the single endpoint for all 15 tools including RAG Q&A. It con
 | `AOAI_API_KEY` | | | AOAI key auth (falls back to Managed Identity) |
 | `KB_NAME` | | `opcua-kb` | Knowledge base name for RAG retrieval |
 | `GPT_DEPLOYMENT` | | `gpt-4o` | GPT model deployment name |
-| `MCP_API_KEY` | | from `SEARCH_API_KEY` | API key for authenticated access |
+| `MCP_API_KEY` | | from `SEARCH_API_KEY` only for local/back-compat | Independent application key for authenticated custom-MCP access in hosted deployments |
 | `MCP_REQUIRE_AUTH` | | `false` | Set `true` to block all anonymous requests |
 | `MCP_ANON_RATE_LIMIT` | | `10` | Max requests/min for anonymous callers (per IP) |
 | `MCP_AUTH_RATE_LIMIT` | | `0` | Max requests/min for authenticated callers (0 = unlimited) |
@@ -116,10 +116,14 @@ The MCP server is the single endpoint for all 15 tools including RAG Q&A. It con
 | `MCP_NODESET_MAX_BYTES` | | `52428800` (50 MB) | Cap on both inline uploads and outbound URL fetches. |
 | `MCP_NODESET_URL_ALLOWLIST` | | `*.opcfoundation.org,raw.githubusercontent.com,objects.githubusercontent.com` | Comma-separated host allow-list for `nodeset_url`. `*` prefix is a wildcard. |
 | `MCP_UPLOAD_KEY` | | falls back to `MCP_API_KEY` | Separate api-key for the upload endpoint. Never falls back to `SEARCH_API_KEY`. |
+| `MCP_ARTIFACT_KEY` | | falls back to `MCP_UPLOAD_KEY` | Required by `GET /mapping-artifacts/{jobId}/{fileName}`. The endpoint fails closed if neither key is configured. |
+| `MCP_MAPPING_KEY` | | `MCP_UPLOAD_KEY`, then explicit `MCP_API_KEY` | Required to submit `create_companion_projection`. Never falls back implicitly to `SEARCH_API_KEY`; job creation fails closed if no write key is configured. |
+| `MAPPING_QUEUE_NAME` | | `model-mapping-jobs` | Azure Storage Queue used by the asynchronous projection worker. |
+| `MAPPING_PREFIX` | | `model-mappings/jobs` | Private blob prefix for staged inputs, checkpoints, status, and generated artifacts. |
 
 ### Tool Implementation
 
-Tools are implemented as static classes with `[McpServerToolType]` and `[McpServerTool]` attributes in `src/OpcUaKb.Core/Tools/`. All 11 tool implementations live in `OpcUaKb.Core` so any future host can reuse them.
+Tools are implemented as static classes with `[McpServerToolType]` and `[McpServerTool]` attributes in `src/OpcUaKb.Core/Tools/`. All 17 tool implementations live in `OpcUaKb.Core` so any future host can reuse them.
 
 | File | Tools |
 |------|-------|
@@ -134,6 +138,8 @@ Tools are implemented as static classes with `[McpServerToolType]` and `[McpServ
 | `CompareVersionsTool.cs` | `compare_versions` |
 | `ComplianceTool.cs` | `check_compliance` |
 | `SuggestModelTool.cs` | `suggest_model` |
+| `CreateCompanionProjectionTool.cs` | `create_companion_projection` |
+| `GetCompanionProjectionTool.cs` | `get_companion_projection` |
 
 ### Services
 
@@ -144,6 +150,19 @@ Tools are implemented as static classes with `[McpServerToolType]` and `[McpServ
 | `NodeSetLoader` | Resolves NodeSet input from any of three modes (inline xml ≤30 KB, `blob:` ref, allow-listed `https://` URL). URL fetches buffer once to memory bounded by `MCP_NODESET_MAX_BYTES`. Auto-redirects disabled (SSRF defense). |
 | `NodeSetXmlReader` | Streaming OPC UA NodeSet parser using `XmlReader` — O(1) memory wrt file size; replaces `XDocument.Parse`. Used by `validate_nodeset` and `check_compliance` so a 20 MB NodeSet parses in ~10 MB working set. |
 | `HashingStream` | Read-through tee that feeds every byte the caller pulls into an `IncrementalHash`. Powers the streaming `/upload-nodeset` endpoint — SHA-256 is computed in the same pass that uploads to blob storage, no whole-payload buffering. |
+| `AddressSpaceNodeSetReader` | Streaming full-AddressSpace parser used by the projection engine. Canonicalizes ExpandedNodeIds and retains descriptions, access, types, references, values, and browse paths. |
+| `CompanionProjectionEngine` | Candidate retrieval, constrained semantic reasoning, exact official-model declaration expansion, multi-spec projection, confidence gates, and gateway mapping generation. |
+| `CompanionProjectionJobService` | Durable blob/queue job submission and status/result access for large mapping jobs. |
+
+### Live-server projection workflow
+
+1. Export the server AddressSpace as NodeSet2 XML (for example with an OPC UA server MCP's `ExportNodeSet` tool).
+2. Upload large exports with `POST /upload-nodeset` and keep the returned `blob:` reference.
+3. Call `create_companion_projection` with that reference.
+4. Poll `get_companion_projection` using the returned job ID.
+5. Load `projection.nodeset2.xml` and `mapping.json` into the gateway. The mapping bundle also includes CSV and review reports.
+
+The output artifacts remain in MI-only private storage. Gateways without Azure Storage RBAC use the API-key-protected `/mapping-artifacts/...` streaming URLs returned by the result tool.
 
 ## NodeSet input modes
 
@@ -180,7 +199,7 @@ User in Teams/M365 Copilot → Foundry Agent Application (Activity bridge)
            → Azure AI Search + Azure AI Foundry (RAG)
 ```
 
-Each of the 15 MCP tools (search_docs, list_specs, get_spec_summary, get_profile, check_profile_conformance, etc.) becomes a distinct `McpClientTool` (`AIFunction`) so GPT-4o picks them by name. The Agent Framework hosting library runs the full tool-call loop locally in the container (model → tool_call → MCP roundtrip → tool_result → final answer). No manual history hydration, no manual dispatch.
+Each of the 17 MCP tools (search_docs, list_specs, get_spec_summary, get_profile, check_profile_conformance, create_companion_projection, etc.) becomes a distinct `McpClientTool` (`AIFunction`) so GPT-4o picks them by name. The Agent Framework hosting library runs the full tool-call loop locally in the container (model → tool_call → MCP roundtrip → tool_result → final answer). No manual history hydration, no manual dispatch.
 
 > **Region constraint** — Foundry Hosted Agents are in preview and only available in select regions (e.g., westus3, westus, norwayeast, francecentral, japaneast). The KB infrastructure (Search, Storage, MCP server, pipeline job) can be in any other region — the agent calls the MCP server cross-region over HTTPS.
 

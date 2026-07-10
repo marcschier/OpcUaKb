@@ -10,15 +10,17 @@ Configures MCP client applications (GitHub Copilot CLI, Claude Desktop) to use t
 
 ```powershell
 # Hosted mode — uses the cloud-hosted MCP server (recommended)
-.\scripts\install-mcp.ps1 -Mode hosted -ApiKey <your-search-api-key>
+.\scripts\install-mcp.ps1 -Mode hosted `
+  -SearchApiKey <your-search-api-key> `
+  -McpApiKey <your-mcp-application-key>
 
 # Local mode — uses the locally installed dotnet tool
-.\scripts\install-mcp.ps1 -Mode local -ApiKey <your-search-api-key>
+.\scripts\install-mcp.ps1 -Mode local -SearchApiKey <your-search-api-key>
 ```
 
 **What it does:**
 1. Detects installed MCP clients (Copilot CLI, Claude Desktop)
-2. Adds/updates the `opcua-kb-tools` MCP server entry (single endpoint for all 15 tools including RAG Q&A)
+2. Adds/updates the `opcua-kb-tools` MCP server entry (single endpoint for all 17 tools including RAG Q&A and companion projection)
 3. In local mode, verifies the `opcua-kb-mcp` dotnet tool is installed
 
 **Configuration files modified:**
@@ -30,7 +32,7 @@ Configures MCP client applications (GitHub Copilot CLI, Claude Desktop) to use t
 Bash equivalent of the PowerShell script:
 
 ```bash
-SEARCH_API_KEY=<your-search-api-key> ./scripts/install-mcp.sh hosted
+SEARCH_API_KEY=<your-search-api-key> MCP_API_KEY=<your-mcp-application-key> ./scripts/install-mcp.sh hosted
 SEARCH_API_KEY=<your-search-api-key> ./scripts/install-mcp.sh local
 ```
 
@@ -93,7 +95,7 @@ End-to-end automation for deploying the OPC UA Hosted Agent to **Azure AI Foundr
 Teams / Web Chat → Foundry Agent Application (Activity bridge)
   → OpcUaKb.HostedAgent (Responses protocol container)
     → ModelContextProtocol.Client.McpClient
-      → OpcUaKb.McpServer (Container App, 15 tools)
+      → OpcUaKb.McpServer (Container App, 17 tools)
         → Azure AI Search + Azure AI Foundry (RAG)
 ```
 
@@ -117,13 +119,13 @@ Add to `~/.copilot/mcp-config.json`:
     "opcua-kb-tools": {
       "type": "http",
       "url": "https://<mcp-server-fqdn>/",
-      "headers": { "api-key": "<your-search-api-key>" }
+      "headers": { "api-key": "<your-mcp-application-key>" }
     }
   }
 }
 ```
 
-This single endpoint provides all 15 tools: structured search, RAG Q&A (`search_docs_rag`), compliance validation, version comparison, model design suggestions, and the profile graph (`list_profile_groups`, `get_profile`, `query_profiles`, `check_profile_conformance`).
+This single endpoint provides all 17 tools: structured search, RAG Q&A (`search_docs_rag`), compliance validation, version comparison, model design suggestions, the profile graph (`list_profile_groups`, `get_profile`, `query_profiles`, `check_profile_conformance`), and asynchronous live-server companion projection (`create_companion_projection`, `get_companion_projection`).
 
 ### Claude Desktop
 
@@ -153,7 +155,7 @@ Add to `claude_desktop_config.json`:
 # Install the dotnet tool globally
 dotnet tool install -g OpcUaKb.McpServer
 
-# Run with stdio transport (all 15 tools)
+# Run with stdio transport (all 17 tools)
 SEARCH_ENDPOINT=https://<prefix>-search.search.windows.net \
 SEARCH_API_KEY=<key> \
 AOAI_ENDPOINT=https://<prefix>-foundry.openai.azure.com \
@@ -176,8 +178,10 @@ dotnet run --project src/OpcUaKb.McpServer -- --stdio
 | `AOAI_API_KEY` | | AOAI key auth (if not using Managed Identity / `az login`) |
 | `KB_NAME` | | Knowledge base name (default: `opcua-kb`) |
 | `GPT_DEPLOYMENT` | | GPT model deployment name (default: `gpt-4o`) |
-| `MCP_API_KEY` | | API key for authenticated access (defaults to `SEARCH_API_KEY` for read tools; `/upload-nodeset` uses this key explicitly and does not fall back to `SEARCH_API_KEY`) |
-| `MCP_UPLOAD_KEY` | | Separate api-key for `POST /upload-nodeset`. Defaults to `MCP_API_KEY`. |
+| `MCP_API_KEY` | | Independent application key for authenticated custom-MCP access. Hosted deployments provision this separately from the Search admin key. |
+| `MCP_UPLOAD_KEY` | | Separate api-key for `POST /upload-nodeset`. Defaults to explicit `MCP_API_KEY`. |
+| `MCP_MAPPING_KEY` | | Required to submit `create_companion_projection`; defaults to `MCP_UPLOAD_KEY`, then explicit `MCP_API_KEY`. Never implicitly uses `SEARCH_API_KEY`. |
+| `MCP_ARTIFACT_KEY` | | Required to download private mapping artifacts; defaults to `MCP_UPLOAD_KEY`. |
 | `MCP_REQUIRE_AUTH` | | Set `true` to reject anonymous requests |
 | `MCP_ANON_RATE_LIMIT` | | Max requests/min for anonymous callers (default: 10) |
 | `MCP_AUTH_RATE_LIMIT` | | Max requests/min for authenticated callers (default: 0 = unlimited) |

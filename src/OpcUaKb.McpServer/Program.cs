@@ -1,5 +1,7 @@
 using System.Net;
 using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.Http;
@@ -12,6 +14,7 @@ using Azure.Identity;
 using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
 using Azure.Storage.Blobs.Specialized;
+using Azure.Storage.Queues;
 using ModelContextProtocol.AspNetCore;
 using ModelContextProtocol.Server;
 
@@ -19,9 +22,10 @@ using ModelContextProtocol.Server;
 // OPC UA Knowledge Base — Custom MCP Server
 // Exposes structured search tools over the Azure AI Search index.
 //
-// Supports two transport modes:
+// Supports three transport modes:
 //   HTTP/SSE (default): Run as a web server for hosted deployment
 //   stdio:              Pass --stdio for local Copilot CLI usage
+//   mapping worker:     Pass --mapping-worker for queue processing only
 //
 // Required env vars: SEARCH_ENDPOINT, SEARCH_API_KEY
 // Optional: SEARCH_INDEX_NAME (default: opcua-content-index-v2)
@@ -30,6 +34,13 @@ using ModelContextProtocol.Server;
 //           KB_NAME       — knowledge base name (default: opcua-kb)
 //           STORAGE_ACCOUNT_NAME — enables nodeset_ref=blob:... and the
 //                                  POST /upload-nodeset endpoint
+//           MAPPING_QUEUE_NAME — default model-mapping-jobs
+//           MAPPING_PREFIX — default model-mappings/jobs
+//           MCP_ARTIFACT_KEY — gates private mapping artifact downloads;
+//                              falls back only to MCP_UPLOAD_KEY
+//           MCP_MAPPING_KEY — gates create_companion_projection;
+//                             falls back to MCP_UPLOAD_KEY, then explicit
+//                             MCP_API_KEY (never SEARCH_API_KEY)
 //
 // Rate limiting env vars:
 //   MCP_API_KEY           — API key for authenticated access
@@ -45,10 +56,28 @@ using ModelContextProtocol.Server;
 // ═══════════════════════════════════════════════════════════════════════
 
 const long DefaultMaxRequestBodyBytes = 64L * 1024 * 1024;
+const int MaxMcpAuthInspectionBytes = 1024 * 1024;
 
 var useStdio = args.Contains("--stdio");
+var useMappingWorker = args.Contains("--mapping-worker");
 
-if (useStdio)
+if (useMappingWorker)
+{
+    var builder = Host.CreateApplicationBuilder(args);
+    builder.Services.AddSingleton<SearchService>();
+    builder.Services.AddSingleton<KbService>();
+    builder.Services.AddSingleton<ProfileGraphService>();
+
+    var storage = RegisterMappingStorage(builder.Services, required: true);
+    builder.Services.AddSingleton(_ => CreateNodeSetLoader(storage.Container));
+
+    builder.Services.AddSingleton<
+        ICompanionProjectionProcessor,
+        CompanionProjectionEngineProcessor>();
+    builder.Services.AddHostedService<CompanionProjectionWorker>();
+    await builder.Build().RunAsync();
+}
+else if (useStdio)
 {
     // stdio transport for local CLI usage — no auth or rate limiting needed
     var builder = Host.CreateApplicationBuilder(args);
@@ -56,8 +85,9 @@ if (useStdio)
     builder.Logging.AddConsole(o => o.LogToStandardErrorThreshold = LogLevel.Trace);
     builder.Services.AddSingleton<SearchService>();
     builder.Services.AddSingleton<KbService>();
-    builder.Services.AddSingleton(_ => NodeSetLoader.CreateDefault());
     builder.Services.AddSingleton<ProfileGraphService>();
+    var storage = RegisterMappingStorage(builder.Services, required: false);
+    builder.Services.AddSingleton(_ => CreateNodeSetLoader(storage.Container));
     builder.Services
         .AddMcpServer(o => o.ServerInfo = new() { Name = "opcua-kb", Version = "1.0.0" })
         .WithStdioServerTransport()
@@ -79,21 +109,13 @@ else
 
     builder.Services.AddSingleton<SearchService>();
     builder.Services.AddSingleton<KbService>();
-    builder.Services.AddSingleton(_ => NodeSetLoader.CreateDefault());
     builder.Services.AddSingleton<ProfileGraphService>();
 
     // Optional BlobContainerClient for the upload endpoint. When the env
     // var isn't set, /upload-nodeset returns 503.
-    var storageAccountName = Environment.GetEnvironmentVariable("STORAGE_ACCOUNT_NAME");
-    var nodesetContainerName = Environment.GetEnvironmentVariable("MCP_NODESET_CONTAINER") ?? "opcua-content";
-    BlobContainerClient? uploadContainer = null;
-    if (!string.IsNullOrWhiteSpace(storageAccountName))
-    {
-        uploadContainer = new BlobServiceClient(
-            new Uri($"https://{storageAccountName}.blob.core.windows.net"),
-            new DefaultAzureCredential())
-            .GetBlobContainerClient(nodesetContainerName);
-    }
+    var storage = RegisterMappingStorage(builder.Services, required: false);
+    var uploadContainer = storage.Container;
+    builder.Services.AddSingleton(_ => CreateNodeSetLoader(uploadContainer));
 
     builder.Services
         .AddMcpServer(o => o.ServerInfo = new() { Name = "opcua-kb", Version = "1.0.0" })
@@ -111,6 +133,11 @@ else
         ?? Environment.GetEnvironmentVariable("SEARCH_API_KEY");
     var explicitMcpApiKey = Environment.GetEnvironmentVariable("MCP_API_KEY");
     var uploadApiKey = Environment.GetEnvironmentVariable("MCP_UPLOAD_KEY")
+        ?? explicitMcpApiKey;
+    var artifactApiKey = Environment.GetEnvironmentVariable("MCP_ARTIFACT_KEY")
+        ?? Environment.GetEnvironmentVariable("MCP_UPLOAD_KEY");
+    var mappingApiKey = Environment.GetEnvironmentVariable("MCP_MAPPING_KEY")
+        ?? Environment.GetEnvironmentVariable("MCP_UPLOAD_KEY")
         ?? explicitMcpApiKey;
 
     var requireAuth = string.Equals(
@@ -133,9 +160,16 @@ else
 
         options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
         {
-            var hasValidKey = !string.IsNullOrEmpty(readApiKey)
-                && context.Request.Headers.TryGetValue("api-key", out var key)
-                && key == readApiKey;
+            var providedKey = context.Request.Headers.TryGetValue("api-key", out var key)
+                ? key.ToString()
+                : null;
+            var expectedKey = context.Request.Path.StartsWithSegments("/upload-nodeset")
+                ? uploadApiKey
+                : context.Request.Path.StartsWithSegments("/mapping-artifacts")
+                    ? artifactApiKey
+                    : readApiKey;
+            var hasValidKey = KeyEquals(providedKey, expectedKey)
+                || KeyEquals(providedKey, mappingApiKey);
 
             if (hasValidKey)
             {
@@ -189,6 +223,34 @@ else
     app.Use(async (context, next) =>
     {
         var isUploadEndpoint = context.Request.Path.StartsWithSegments("/upload-nodeset");
+        var isArtifactEndpoint = context.Request.Path.StartsWithSegments("/mapping-artifacts");
+
+        if (isArtifactEndpoint)
+        {
+            if (string.IsNullOrEmpty(artifactApiKey))
+            {
+                context.Response.StatusCode = 503;
+                context.Response.ContentType = "application/json";
+                await context.Response.WriteAsync(
+                    """{"error":"artifact_download_disabled","error_description":"Set MCP_ARTIFACT_KEY (or MCP_UPLOAD_KEY) to enable mapping artifact downloads."}""");
+                return;
+            }
+
+            var providedArtifact = context.Request.Headers.TryGetValue("api-key", out var a)
+                ? a.ToString()
+                : null;
+            if (!KeyEquals(providedArtifact, artifactApiKey))
+            {
+                context.Response.StatusCode = 401;
+                context.Response.ContentType = "application/json";
+                await context.Response.WriteAsync(
+                    """{"error":"unauthorized","error_description":"Valid api-key header required for mapping artifact downloads."}""");
+                return;
+            }
+
+            await next();
+            return;
+        }
 
         if (isUploadEndpoint)
         {
@@ -202,7 +264,7 @@ else
             }
 
             var providedUpload = context.Request.Headers.TryGetValue("api-key", out var u) ? u.ToString() : null;
-            if (providedUpload != uploadApiKey)
+            if (!KeyEquals(providedUpload, uploadApiKey))
             {
                 context.Response.StatusCode = 401;
                 context.Response.ContentType = "application/json";
@@ -215,11 +277,60 @@ else
             return;
         }
 
+        var mappingInspection = await InspectMappingCallAsync(
+            context.Request, MaxMcpAuthInspectionBytes, context.RequestAborted);
+        if (mappingInspection == McpCallInspection.Oversized)
+        {
+            var providedMapping = context.Request.Headers.TryGetValue("api-key", out var oversizedKey)
+                ? oversizedKey.ToString()
+                : null;
+            if (!KeyEquals(providedMapping, mappingApiKey))
+            {
+                context.Response.StatusCode = StatusCodes.Status413PayloadTooLarge;
+                context.Response.ContentType = "application/json";
+                await context.Response.WriteAsync(
+                    """{"jsonrpc":"2.0","error":{"code":-32002,"message":"MCP request is too large for bounded write-auth inspection."},"id":null}""");
+                return;
+            }
+
+            // A valid mapping key authorizes an oversized request without
+            // buffering it. The MCP transport still enforces its normal limits.
+            await next();
+            return;
+        }
+
+        if (mappingInspection == McpCallInspection.CreateCompanionProjection)
+        {
+            if (string.IsNullOrEmpty(mappingApiKey))
+            {
+                context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+                context.Response.ContentType = "application/json";
+                await context.Response.WriteAsync(
+                    """{"jsonrpc":"2.0","error":{"code":-32001,"message":"create_companion_projection is disabled because MCP_MAPPING_KEY, MCP_UPLOAD_KEY, and explicit MCP_API_KEY are not configured."},"id":null}""");
+                return;
+            }
+
+            var providedMapping = context.Request.Headers.TryGetValue("api-key", out var mappingKey)
+                ? mappingKey.ToString()
+                : null;
+            if (!KeyEquals(providedMapping, mappingApiKey))
+            {
+                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                context.Response.ContentType = "application/json";
+                await context.Response.WriteAsync(
+                    """{"jsonrpc":"2.0","error":{"code":-32000,"message":"Valid api-key header required for create_companion_projection."},"id":null}""");
+                return;
+            }
+
+            await next();
+            return;
+        }
+
         // MCP / other endpoints — fall back to the original read-side policy.
         if (!string.IsNullOrEmpty(readApiKey) && requireAuth)
         {
             var hasValidKey = context.Request.Headers.TryGetValue("api-key", out var providedKey)
-                && providedKey == readApiKey;
+                && KeyEquals(providedKey.ToString(), readApiKey);
             if (!hasValidKey)
             {
                 context.Response.StatusCode = 401;
@@ -369,6 +480,80 @@ else
         }
     }).DisableAntiforgery();
 
+    app.MapGet("/mapping-artifacts/{jobId}/{fileName}", async (
+        string jobId,
+        string fileName,
+        HttpResponse response,
+        CancellationToken ct) =>
+    {
+        if (uploadContainer == null)
+        {
+            response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+            await response.WriteAsJsonAsync(new
+            {
+                error = "artifact_download_disabled",
+                error_description = "STORAGE_ACCOUNT_NAME is not configured.",
+            }, cancellationToken: ct);
+            return;
+        }
+
+        if (!CompanionProjectionJobService.IsValidJobId(jobId)
+            || !CompanionProjectionJobStore.IsArtifactFileName(fileName))
+        {
+            response.StatusCode = StatusCodes.Status404NotFound;
+            return;
+        }
+
+        var blobName = $"{storage.Prefix}/{jobId}/artifacts/{fileName}";
+        var blob = uploadContainer.GetBlobClient(blobName);
+        try
+        {
+            var download = await blob.DownloadStreamingAsync(cancellationToken: ct);
+            await using var content = download.Value.Content;
+            var details = download.Value.Details;
+            var contentType = details.ContentType
+                ?? CompanionProjectionJobStore.ContentTypeForArtifact(fileName);
+
+            response.StatusCode = StatusCodes.Status200OK;
+            response.ContentType = contentType;
+            response.ContentLength = details.ContentLength;
+            response.Headers.ETag = details.ETag.ToString();
+            response.Headers.ContentDisposition = $"attachment; filename=\"{fileName}\"";
+            response.Headers.CacheControl = "private, no-store";
+            response.Headers["X-Content-Type-Options"] = "nosniff";
+
+            if (details.Metadata.TryGetValue("sha256", out var sha256)
+                && sha256.Length == 64)
+            {
+                response.Headers["X-Content-SHA256"] = sha256;
+                try
+                {
+                    var digest = Convert.ToBase64String(Convert.FromHexString(sha256));
+                    response.Headers["Content-Digest"] = $"sha-256=:{digest}:";
+                }
+                catch (FormatException)
+                {
+                    // Ignore malformed legacy metadata; the blob still streams.
+                }
+            }
+
+            await content.CopyToAsync(response.Body, ct);
+        }
+        catch (RequestFailedException ex) when (ex.Status == 404)
+        {
+            response.StatusCode = StatusCodes.Status404NotFound;
+        }
+        catch (RequestFailedException ex)
+        {
+            response.StatusCode = StatusCodes.Status502BadGateway;
+            await response.WriteAsJsonAsync(new
+            {
+                error = "artifact_storage_failure",
+                error_description = $"{ex.Status} {ex.ErrorCode}",
+            }, cancellationToken: ct);
+        }
+    });
+
     app.MapMcp();
     app.Run();
 }
@@ -407,3 +592,134 @@ static async Task<Stream?> ExtractUploadStreamAsync(HttpRequest req, Cancellatio
     return req.Body;
 }
 
+static MappingStorageRegistration RegisterMappingStorage(
+    IServiceCollection services,
+    bool required)
+{
+    var accountName = Environment.GetEnvironmentVariable("STORAGE_ACCOUNT_NAME");
+    var containerName = Environment.GetEnvironmentVariable("MCP_NODESET_CONTAINER")
+        ?? "opcua-content";
+    var queueName = Environment.GetEnvironmentVariable("MAPPING_QUEUE_NAME")
+        ?? "model-mapping-jobs";
+    var prefix = Environment.GetEnvironmentVariable("MAPPING_PREFIX")
+        ?? "model-mappings/jobs";
+
+    if (string.IsNullOrWhiteSpace(accountName))
+    {
+        if (required)
+            throw new InvalidOperationException(
+                "STORAGE_ACCOUNT_NAME is required for --mapping-worker.");
+        services.AddSingleton(new CompanionProjectionJobService(
+            "Companion projection is unavailable because STORAGE_ACCOUNT_NAME is not configured."));
+        return new MappingStorageRegistration(null, prefix);
+    }
+
+    var credential = new DefaultAzureCredential();
+    var blobService = new BlobServiceClient(
+        new Uri($"https://{accountName}.blob.core.windows.net"),
+        credential);
+    var container = blobService.GetBlobContainerClient(containerName);
+    var queue = new QueueClient(
+        new Uri($"https://{accountName}.queue.core.windows.net/{queueName}"),
+        credential);
+    var store = new CompanionProjectionJobStore(container, prefix);
+
+    services.AddSingleton(blobService);
+    services.AddSingleton(container);
+    services.AddSingleton(queue);
+    services.AddSingleton(store);
+    services.AddSingleton<CompanionProjectionJobService>();
+    services.AddSingleton<AddressSpaceNodeSetReader>();
+    services.AddSingleton<AoaiChatClient>();
+    services.AddSingleton<ModelMappingArtifactWriter>();
+    services.AddSingleton<CompanionModelRepository>();
+    services.AddSingleton<ICompanionModelRepository>(provider =>
+        provider.GetRequiredService<CompanionModelRepository>());
+    services.AddSingleton<ICompanionModelCatalog>(provider =>
+        provider.GetRequiredService<CompanionModelRepository>());
+    return new MappingStorageRegistration(container, store.Prefix);
+}
+
+static NodeSetLoader CreateNodeSetLoader(BlobContainerClient? container)
+{
+    var handler = new HttpClientHandler { AllowAutoRedirect = false };
+    var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(60) };
+    return new NodeSetLoader(client, container);
+}
+
+static async Task<McpCallInspection> InspectMappingCallAsync(
+    HttpRequest request,
+    int maxBytes,
+    CancellationToken cancellationToken)
+{
+    if (!HttpMethods.IsPost(request.Method) || request.ContentLength == 0)
+        return McpCallInspection.Other;
+    if (request.ContentLength is > 0 && request.ContentLength > maxBytes)
+        return McpCallInspection.Oversized;
+
+    request.EnableBuffering(bufferThreshold: maxBytes, bufferLimit: maxBytes);
+    try
+    {
+        using var document = await JsonDocument.ParseAsync(
+            request.Body,
+            new JsonDocumentOptions { MaxDepth = 64 },
+            cancellationToken);
+        return ContainsCreateCompanionProjectionCall(document.RootElement)
+            ? McpCallInspection.CreateCompanionProjection
+            : McpCallInspection.Other;
+    }
+    catch (IOException)
+    {
+        // A chunked body exceeded the in-memory inspection bound.
+        return McpCallInspection.Oversized;
+    }
+    catch (JsonException)
+    {
+        // Let the MCP transport return its normal JSON-RPC parse error.
+        return McpCallInspection.Other;
+    }
+    finally
+    {
+        if (request.Body.CanSeek)
+            request.Body.Position = 0;
+    }
+}
+
+static bool ContainsCreateCompanionProjectionCall(JsonElement element)
+{
+    if (element.ValueKind == JsonValueKind.Array)
+        return element.EnumerateArray().Any(ContainsCreateCompanionProjectionCall);
+    if (element.ValueKind != JsonValueKind.Object)
+        return false;
+    if (!element.TryGetProperty("method", out var method)
+        || method.ValueKind != JsonValueKind.String
+        || !string.Equals(method.GetString(), "tools/call", StringComparison.Ordinal))
+        return false;
+    if (!element.TryGetProperty("params", out var parameters)
+        || parameters.ValueKind != JsonValueKind.Object
+        || !parameters.TryGetProperty("name", out var name)
+        || name.ValueKind != JsonValueKind.String)
+        return false;
+    return string.Equals(
+        name.GetString(), "create_companion_projection", StringComparison.Ordinal);
+}
+
+static bool KeyEquals(string? provided, string? expected)
+{
+    if (string.IsNullOrEmpty(provided) || string.IsNullOrEmpty(expected))
+        return false;
+    var providedHash = SHA256.HashData(Encoding.UTF8.GetBytes(provided));
+    var expectedHash = SHA256.HashData(Encoding.UTF8.GetBytes(expected));
+    return CryptographicOperations.FixedTimeEquals(providedHash, expectedHash);
+}
+
+sealed record MappingStorageRegistration(
+    BlobContainerClient? Container,
+    string Prefix);
+
+enum McpCallInspection
+{
+    Other,
+    CreateCompanionProjection,
+    Oversized,
+}

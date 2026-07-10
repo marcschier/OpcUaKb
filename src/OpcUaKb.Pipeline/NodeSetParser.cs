@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -26,10 +27,10 @@ sealed class OpcUaNodeSetParser
         ["ns=0;i=78"]     = "Mandatory",
         ["i=80"]          = "Optional",
         ["ns=0;i=80"]     = "Optional",
-        ["i=11508"]       = "MandatoryPlaceholder",
-        ["ns=0;i=11508"]  = "MandatoryPlaceholder",
-        ["i=11510"]       = "OptionalPlaceholder",
-        ["ns=0;i=11510"]  = "OptionalPlaceholder",
+        ["i=11508"]       = "OptionalPlaceholder",
+        ["ns=0;i=11508"]  = "OptionalPlaceholder",
+        ["i=11510"]       = "MandatoryPlaceholder",
+        ["ns=0;i=11510"]  = "MandatoryPlaceholder",
         ["i=83"]          = "ExposesItsArray",
         ["ns=0;i=83"]     = "ExposesItsArray",
     };
@@ -61,6 +62,8 @@ sealed class OpcUaNodeSetParser
 
     // ── Type hierarchy data (populated during ParseAllAsync) ────────────
     readonly Dictionary<string, TypeInfo> _typeRegistry = new(StringComparer.Ordinal);
+    readonly List<NodeSetModelCatalogEntry> _modelCatalog = [];
+    readonly HashSet<string> _failedModelCatalogSourceBlobs = new(StringComparer.Ordinal);
 
     /// <summary>Type hierarchy information for a single subtype-able type node
     /// (ObjectType, VariableType, or DataType).</summary>
@@ -108,13 +111,18 @@ sealed class OpcUaNodeSetParser
     /// <summary>Exposes the computed type hierarchy for use by GenerateSummaries.</summary>
     internal IReadOnlyDictionary<string, TypeInfo> TypeRegistry => _typeRegistry;
 
+    /// <summary>Models discovered by the most recent official ParseAllAsync run.</summary>
+    internal IReadOnlyList<NodeSetModelCatalogEntry> ModelCatalog => _modelCatalog;
+    internal IReadOnlyCollection<string> FailedModelCatalogSourceBlobs =>
+        _failedModelCatalogSourceBlobs;
+
     /// <summary>Parse specific blob names (used for CloudLibrary integration).</summary>
     public async Task<List<SearchDocument>> ParseBlobsAsync(List<string> blobNames)
     {
         _log.LogInformation("[NODESET] Parsing {Count} specified blobs", blobNames.Count);
         if (blobNames.Count == 0) return [];
 
-        return await ParseBlobListAsync(blobNames);
+        return await ParseBlobListAsync(blobNames, collectModelCatalog: false);
     }
 
     public async Task<List<SearchDocument>> ParseAllAsync()
@@ -137,13 +145,16 @@ sealed class OpcUaNodeSetParser
             blobNames.Add(name);
         }
 
+        _modelCatalog.Clear();
+        _failedModelCatalogSourceBlobs.Clear();
         _log.LogInformation("[NODESET] Found {Count} nodeset XML blobs", blobNames.Count);
         if (blobNames.Count == 0) return [];
 
-        return await ParseBlobListAsync(blobNames);
+        return await ParseBlobListAsync(blobNames, collectModelCatalog: true);
     }
 
-    async Task<List<SearchDocument>> ParseBlobListAsync(List<string> blobNames)
+    async Task<List<SearchDocument>> ParseBlobListAsync(
+        List<string> blobNames, bool collectModelCatalog)
     {
         var allDocs = new List<SearchDocument>();
         var allFileNodes = new List<(string spec, List<FileNodeInfo> nodes,
@@ -160,16 +171,30 @@ sealed class OpcUaNodeSetParser
             {
                 var dl = await _container.GetBlobClient(blobName).DownloadContentAsync();
                 var xml = dl.Value.Content.ToString();
-                var (docs, fileNodes, localToGlobal) = ParseNodeSetXmlWithHierarchy(xml, blobName);
+                var (docs, fileNodes, localToGlobal, catalogEntries) =
+                    ParseNodeSetXmlWithHierarchy(xml, blobName);
                 allDocs.AddRange(docs);
+                if (collectModelCatalog)
+                    _modelCatalog.AddRange(catalogEntries);
                 var spec = docs.FirstOrDefault()?["spec_part"]?.ToString() ?? "Unknown";
                 allFileNodes.Add((spec, fileNodes, localToGlobal));
             }
             catch (Exception ex)
             {
+                if (collectModelCatalog)
+                    _failedModelCatalogSourceBlobs.Add(blobName);
                 _log.LogWarning("[NODESET] Skipping malformed XML Blob={Blob} Error={Error}",
                     blobName, ex.Message);
             }
+        }
+
+        if (collectModelCatalog)
+        {
+            _log.LogInformation(
+                "[MODEL_CATALOG] Phase=collected Models={Models} FailedSources={FailedSources} SourceFiles={SourceFiles}",
+                _modelCatalog.Count,
+                _failedModelCatalogSourceBlobs.Count,
+                _modelCatalog.Select(m => m.SourceBlob).Distinct(StringComparer.Ordinal).Count());
         }
 
         // Phase 3: compute declared member counts per ObjectType
@@ -434,7 +459,8 @@ sealed class OpcUaNodeSetParser
 
     // ── Core parsing with hierarchy metadata collection ─────────────────
 
-    (List<SearchDocument> docs, List<FileNodeInfo> nodes, Dictionary<string, string> localToGlobal)
+    (List<SearchDocument> docs, List<FileNodeInfo> nodes,
+        Dictionary<string, string> localToGlobal, List<NodeSetModelCatalogEntry> catalogEntries)
         ParseNodeSetXmlWithHierarchy(string xml, string blobName)
     {
         var xdoc = XDocument.Parse(xml);
@@ -455,12 +481,32 @@ sealed class OpcUaNodeSetParser
             if (name != null) aliases[name] = value;
         }
 
+        var models = root.Element(Ns + "Models")?.Elements(Ns + "Model").ToList() ?? [];
+
+        var catalogEntries = models
+            .Select(model => new NodeSetModelCatalogEntry
+            {
+                ModelUri = model.Attribute("ModelUri")?.Value ?? "",
+                Version = model.Attribute("Version")?.Value ?? "",
+                PublicationDate = model.Attribute("PublicationDate")?.Value ?? "",
+                SourceBlob = blobName,
+                NamespaceUris = [.. namespaceUris],
+                RequiredModels = model.Elements(Ns + "RequiredModel")
+                    .Select(required => new NodeSetRequiredModel
+                    {
+                        ModelUri = required.Attribute("ModelUri")?.Value ?? "",
+                        Version = required.Attribute("Version")?.Value ?? "",
+                        PublicationDate = required.Attribute("PublicationDate")?.Value ?? "",
+                    })
+                    .ToList(),
+            })
+            .ToList();
+
         // Determine the file's OWN namespace from <Models><Model ModelUri="...">.
         // NamespaceUris[0] is unreliable — it's frequently a dependency (e.g. DI)
         // rather than this file's own namespace, which leads to dependency nodes
         // being tagged with this file's spec_part and vice versa.
-        var ownNsUri = root.Element(Ns + "Models")
-            ?.Elements(Ns + "Model")
+        var ownNsUri = models
             .Select(m => m.Attribute("ModelUri")?.Value)
             .FirstOrDefault(v => !string.IsNullOrEmpty(v));
 
@@ -470,6 +516,28 @@ sealed class OpcUaNodeSetParser
             ownNsUri = namespaceUris.Count > 0 ? namespaceUris[^1] : "";
 
         var primaryNsUri = ownNsUri ?? "";
+        var owningModel = models.FirstOrDefault(m =>
+            string.Equals(
+                m.Attribute("ModelUri")?.Value?.TrimEnd('/'),
+                primaryNsUri.TrimEnd('/'),
+                StringComparison.OrdinalIgnoreCase));
+        var modelUri = owningModel?.Attribute("ModelUri")?.Value ?? primaryNsUri;
+        var modelVersion = owningModel?.Attribute("Version")?.Value ?? "";
+        var publicationDateText = owningModel?.Attribute("PublicationDate")?.Value;
+        DateTimeOffset? publicationDate = TryParsePublicationDate(publicationDateText);
+
+        if (catalogEntries.Count == 0 && !string.IsNullOrWhiteSpace(primaryNsUri))
+        {
+            catalogEntries.Add(new NodeSetModelCatalogEntry
+            {
+                ModelUri = primaryNsUri,
+                Version = "",
+                PublicationDate = "",
+                SourceBlob = blobName,
+                NamespaceUris = [.. namespaceUris],
+                RequiredModels = [],
+            });
+        }
 
         // Find the 1-based index of the own namespace in NamespaceUris.
         // NodeIds use ns=N where N is 1-based (ns=0 = OPC UA core; implicit if no ns prefix).
@@ -528,8 +596,7 @@ sealed class OpcUaNodeSetParser
             // core (ns=0) nodes for the same reason.
             if (ownNsIndex > 0)
             {
-                var nodeIdNs = GetNodeIdNamespace(nodeId);
-                if (nodeIdNs != ownNsIndex)
+                if (!IsNodeInOwnNamespace(nodeId, ownNsIndex, primaryNsUri, aliases))
                     continue;
             }
 
@@ -543,6 +610,7 @@ sealed class OpcUaNodeSetParser
             string parentType = "";
             string? resolvedParentLocalId = null;
             string? supertypeLocalId = null;
+            string? typeDefinitionLocalId = null;
 
             foreach (var r in refs)
             {
@@ -559,7 +627,13 @@ sealed class OpcUaNodeSetParser
                     ModellingRules.TryGetValue(resolvedTarget, out modellingRule!);
                     modellingRule ??= "";
                 }
-                else if (IsContainmentRef(refType) && r.Attribute("IsForward")?.Value != "true")
+                else if (IsHasTypeDefinitionRef(refType)
+                         && !IsInverseReference(r.Attribute("IsForward")?.Value))
+                {
+                    typeDefinitionLocalId = aliases.TryGetValue(target, out var t) ? t : target;
+                }
+                else if (IsContainmentRef(refType)
+                         && IsInverseReference(r.Attribute("IsForward")?.Value))
                 {
                     var resolvedTarget = aliases.TryGetValue(target, out var t) ? t : target;
                     resolvedParentLocalId = resolvedTarget;
@@ -567,7 +641,7 @@ sealed class OpcUaNodeSetParser
                         parentType = pName;
                 }
                 else if ((refType == "HasSubtype" || refType == "i=45" || refType == "ns=0;i=45")
-                         && r.Attribute("IsForward")?.Value != "true")
+                         && IsInverseReference(r.Attribute("IsForward")?.Value))
                 {
                     // Inverse HasSubtype: this type IS a subtype of target
                     supertypeLocalId = aliases.TryGetValue(target, out var t) ? t : target;
@@ -577,23 +651,33 @@ sealed class OpcUaNodeSetParser
             // Fall back to ParentNodeId attribute for parent resolution
             if (resolvedParentLocalId == null && parentNodeId != null)
             {
-                resolvedParentLocalId = parentNodeId;
-                if (string.IsNullOrEmpty(parentType) && nodeIndex.TryGetValue(parentNodeId, out var pName))
+                resolvedParentLocalId = aliases.TryGetValue(parentNodeId, out var resolvedParent)
+                    ? resolvedParent
+                    : parentNodeId;
+                if (string.IsNullOrEmpty(parentType)
+                    && nodeIndex.TryGetValue(resolvedParentLocalId, out var pName))
                     parentType = pName;
             }
+
+            var globalNodeId = localToGlobal.GetValueOrDefault(nodeId)
+                ?? ResolveGlobalNodeId(nodeId, namespaceUris, aliases);
+            var globalTypeDefinitionId = typeDefinitionLocalId != null
+                ? ResolveGlobalNodeId(typeDefinitionLocalId, namespaceUris, aliases)
+                : "";
+            var globalParentNodeId = resolvedParentLocalId != null
+                ? ResolveGlobalNodeId(resolvedParentLocalId, namespaceUris, aliases)
+                : "";
 
             // Register ObjectType / VariableType / DataType in hierarchy
             if (IsSubtypeableTypeClass(nodeClass) && !string.IsNullOrEmpty(nodeId))
             {
-                var globalId = localToGlobal.GetValueOrDefault(nodeId)
-                    ?? ResolveGlobalNodeId(nodeId, namespaceUris, aliases);
                 var supertypeGlobalId = supertypeLocalId != null
                     ? ResolveGlobalNodeId(supertypeLocalId, namespaceUris, aliases)
                     : null;
 
-                _typeRegistry.TryAdd(globalId, new TypeInfo
+                _typeRegistry.TryAdd(globalNodeId, new TypeInfo
                 {
-                    GlobalNodeId = globalId,
+                    GlobalNodeId = globalNodeId,
                     BrowseName = browseName,
                     Spec = specName,
                     NodeClass = nodeClass,
@@ -605,8 +689,7 @@ sealed class OpcUaNodeSetParser
             fileNodes.Add(new FileNodeInfo
             {
                 LocalNodeId = nodeId,
-                GlobalNodeId = localToGlobal.GetValueOrDefault(nodeId)
-                    ?? ResolveGlobalNodeId(nodeId, namespaceUris, aliases),
+                GlobalNodeId = globalNodeId,
                 NodeClass = nodeClass,
                 ParentLocalNodeId = resolvedParentLocalId,
             });
@@ -616,7 +699,13 @@ sealed class OpcUaNodeSetParser
                 modellingRule, parentType, description);
 
             var sourceUrl = BuildSourceUrl(primaryNsUri, blobName);
-            var id = MakeId(primaryNsUri, browseName, nodeId);
+            var id = MakeId(
+                primaryNsUri,
+                browseName,
+                nodeId,
+                modelVersion,
+                publicationDateText ?? "",
+                blobName);
             var sectionTitle = !string.IsNullOrEmpty(parentType) ? parentType : browseName;
 
             docs.Add(new SearchDocument(new Dictionary<string, object>
@@ -635,12 +724,41 @@ sealed class OpcUaNodeSetParser
                 ["parent_type"] = parentType,
                 ["data_type"] = StripNamespacePrefix(dataType),
                 ["namespace_uri"] = primaryNsUri,
-            ["is_latest"] = true,
-            ["version_rank"] = 1,
+                ["node_id"] = globalNodeId,
+                ["model_uri"] = modelUri,
+                ["model_version"] = modelVersion,
+                ["source_blob"] = blobName,
+                ["type_definition_id"] = globalTypeDefinitionId,
+                ["parent_node_id"] = globalParentNodeId,
+                ["is_latest"] = true,
+                ["version_rank"] = 1,
             }));
+            if (publicationDate.HasValue)
+                docs[^1]["publication_date"] = publicationDate.Value;
         }
 
-        return (docs, fileNodes, localToGlobal);
+        return (docs, fileNodes, localToGlobal, catalogEntries);
+
+        static bool IsNodeInOwnNamespace(
+            string nodeId,
+            int ownNsIndex,
+            string ownNsUri,
+            Dictionary<string, string> aliases)
+        {
+            if (aliases.TryGetValue(nodeId, out var resolved))
+                nodeId = resolved;
+
+            if (nodeId.StartsWith("nsu=", StringComparison.OrdinalIgnoreCase))
+            {
+                var semi = nodeId.IndexOf(';');
+                if (semi <= 4) return false;
+                var uri = Uri.UnescapeDataString(nodeId[4..semi]);
+                return string.Equals(uri.TrimEnd('/'), ownNsUri.TrimEnd('/'),
+                    StringComparison.OrdinalIgnoreCase);
+            }
+
+            return GetNodeIdNamespace(nodeId) == ownNsIndex;
+        }
 
         // Parses the namespace index from a NodeId string.
         // Format: "ns=N;i=123" or "ns=N;s=Foo" or "i=123" (ns=0 implied).
@@ -778,8 +896,24 @@ sealed class OpcUaNodeSetParser
 
     static bool IsContainmentRef(string refType)
     {
-        return ContainmentRefs.Contains(refType);
+        if (ContainmentRefs.Contains(refType)) return true;
+
+        return refType.StartsWith($"nsu={BaseUaNamespace};", StringComparison.OrdinalIgnoreCase)
+            && refType[(refType.LastIndexOf(';') + 1)..] is "i=46" or "i=47" or "i=49";
     }
+
+    static bool IsHasTypeDefinitionRef(string refType)
+    {
+        if (refType is "HasTypeDefinition" or "i=40" or "ns=0;i=40")
+            return true;
+
+        return refType.StartsWith($"nsu={BaseUaNamespace};", StringComparison.OrdinalIgnoreCase)
+            && refType.EndsWith(";i=40", StringComparison.Ordinal);
+    }
+
+    static bool IsInverseReference(string? isForward) =>
+        string.Equals(isForward, "false", StringComparison.OrdinalIgnoreCase)
+        || isForward == "0";
 
     /// <summary>
     /// Converts a file-local NodeId to a globally unique identifier using namespace URIs.
@@ -800,7 +934,7 @@ sealed class OpcUaNodeSetParser
             {
                 var nsUri = localNodeId[4..semiIdx];
                 var identifier = localNodeId[(semiIdx + 1)..];
-                return $"{nsUri}|{identifier}";
+                return $"nsu={EscapeNamespaceUri(nsUri)};{identifier}";
             }
         }
 
@@ -819,11 +953,31 @@ sealed class OpcUaNodeSetParser
             else
                 nsUri = $"ns={nsIndex}"; // Unknown namespace — best-effort
 
-            return $"{nsUri}|{identifier}";
+            return $"nsu={EscapeNamespaceUri(nsUri)};{identifier}";
         }
 
         // No namespace prefix → namespace 0 (base OPC UA)
-        return $"{BaseUaNamespace}|{localNodeId}";
+        return $"nsu={EscapeNamespaceUri(BaseUaNamespace)};{localNodeId}";
+    }
+
+    static string EscapeNamespaceUri(string namespaceUri)
+    {
+        if (Uri.TryCreate(namespaceUri, UriKind.Absolute, out var uri))
+            return uri.GetComponents(UriComponents.AbsoluteUri, UriFormat.UriEscaped)
+                .Replace(";", "%3B", StringComparison.Ordinal);
+
+        return namespaceUri.Replace("%", "%25", StringComparison.Ordinal)
+            .Replace(";", "%3B", StringComparison.Ordinal)
+            .Replace(" ", "%20", StringComparison.Ordinal);
+    }
+
+    static DateTimeOffset? TryParsePublicationDate(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        return DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var parsed)
+            ? parsed
+            : null;
     }
 
     static string FormatChunkText(string nodeClass, string browseName,
@@ -843,9 +997,9 @@ sealed class OpcUaNodeSetParser
         return sb.ToString();
     }
 
-    static string MakeId(string namespaceUri, string browseName, string nodeId)
+    static string MakeId(params string[] identityParts)
     {
-        var raw = $"{namespaceUri}:{browseName}:{nodeId}";
+        var raw = string.Join('\u001F', identityParts);
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(raw)))[..32]
             .ToLowerInvariant();
     }

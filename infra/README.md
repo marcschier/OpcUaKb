@@ -15,13 +15,19 @@ All Azure resources are defined in [`main.bicep`](main.bicep) and deployed via [
 | Private DNS zone | `privatelink.blob.core.windows.net` | Linked to the VNet; resolves the storage account's blob endpoint to the PE private IP for any VNet client. |
 | Private endpoint | `{prefix}-storage-pe` | For storage `blob` group. Auto-approved (same subscription). |
 | Container Apps Job | `{prefix}-pipeline-job` | Weekly crawl + index (cron: `0 2 * * 0`, 24h timeout). Runs in the VNet-integrated workload-profile env; writes to storage via private endpoint. System MI + Cognitive Services OpenAI User + Storage Blob Data Contributor. |
-| Container App | `{prefix}-mcp-server` | MCP server with 15 tools + RAG. **Workload-profile env, VNet-integrated.** Reads/writes storage exclusively via private endpoint. System MI + Cognitive Services OpenAI User + Storage Blob Data Contributor. |
+| Container App | `{prefix}-mcp-server` | MCP server with 17 tools + RAG, including asynchronous companion projection. **Workload-profile env, VNet-integrated.** Reads/writes storage exclusively via private endpoint. System MI + Cognitive Services OpenAI User + Storage Blob/Queue Data Contributor. |
 | Log Analytics Workspace | `{prefix}-logs` | Pipeline and MCP server log collection |
 | Azure Monitor Workbook | — | Pipeline dashboard (crawl/index/error tracking) |
 
 > **Note**: The OPC UA Expert agent (`OpcUaKb.HostedAgent`) is **not** in this Bicep — it's a Foundry Hosted Agent provisioned by `azd provision` / `azd deploy` from `src/OpcUaKb.HostedAgent/`. The Hosted Agent connects to the MCP server here over HTTPS via `MCP_SERVER_URL`.
 >
 > **Region**: Foundry Hosted Agents are preview-only in select regions (westus3, westus, norwayeast, francecentral, japaneast). All KB resources colocate with the Hosted Agent in **westus3** (single region, single resource group `rg-opcua-kb`).
+
+### Queued Model-Mapping Worker
+
+The infrastructure provisions the `model-mapping-jobs` Storage Queue and an internal, no-ingress `${prefix}-mapping-worker` Container App in the existing VNet-integrated environment. The worker uses the MCP server image with `--mapping-worker`, 2 CPU/4 GiB, and scales from 0–2 replicas at one queued message per replica.
+
+Queue traffic stays private through `${prefix}-storage-queue-pe`, `privatelink.queue.core.windows.net`, its VNet link, and DNS zone group. The KEDA `azure-queue` rule uses the worker's system-assigned managed identity (`custom.identity: system`), not a connection string. The worker receives AcrPull, Storage Blob Data Contributor, Storage Queue Data Contributor, Search Index Data Reader, and Cognitive Services OpenAI User; the MCP server also receives Storage Queue Data Contributor so it can enqueue jobs. `SEARCH_API_KEY` is temporarily used internally by the worker because the current Search client requires it; Search RBAC is ready for managed-identity integration. Public/application authentication uses a separate secure `mcpAccessKey` Bicep parameter, never the Search admin key. `infra/deploy.sh` preserves the existing Container App secret on redeploy or generates a 256-bit key on first deployment and stores the local copy in ignored `.session/mcp-access-key.txt`.
 
 ## Deployment
 
@@ -116,7 +122,7 @@ az bicep build --file infra/main.bicep
 | `storageAccountName` | Storage account name | Used by Pipeline + Indexer with DefaultAzureCredential (shared-key auth disabled) |
 | `acrLoginServer` | `{prefix}registry.azurecr.io` | |
 | `mcpEndpoint` | `https://{prefix}-search.search.windows.net/knowledgebases/{prefix}-kb/mcp?api-version=2025-11-01-preview` | Built-in KB-hosted MCP endpoint |
-| `mcpServerEndpoint` | `https://{prefix}-mcp-server.<env>.azurecontainerapps.io` | Custom MCP server (15 tools + RAG); the Foundry Toolbox proxies to this |
+| `mcpServerEndpoint` | `https://{prefix}-mcp-server.<env>.azurecontainerapps.io` | Custom MCP server (17 tools + RAG); the Foundry Hosted Agent connects directly to this |
 
 ### Monitoring
 

@@ -166,14 +166,36 @@ try
 
     // ── Phase 5: NodeSet Parse ────────────────────────────────────────
     phaseSw = await BeginPhaseAsync("nodeset_parse");
+    // NodeSet upload happens before SpecIndexer runs. Ensure the shared v2
+    // index schema is upgraded here so newly-added structured fields are
+    // accepted on the first NodeSet batch (CreateOrUpdate only adds fields;
+    // existing field attributes are intentionally unchanged).
+    var v2IndexClient = new SearchIndexClient(
+        new Uri(searchEndpoint), new AzureKeyCredential(searchApiKey));
+    await RetryHelper.RetrySearchAsync(async () =>
+    {
+        await v2IndexClient.CreateOrUpdateIndexAsync(
+            SearchIndexFactory.Build(IndexNameV2, aoaiEndpoint));
+        return true;
+    }, log);
+    log.LogInformation("[NODESET] Phase=index_schema_ready Index={Index}", IndexNameV2);
+
     var nodesetParser = new OpcUaNodeSetParser(blobs,
         loggerFactory.CreateLogger<OpcUaNodeSetParser>());
     var nodesetDocs = await nodesetParser.ParseAllAsync();
+    var modelCatalog = await NodeSetModelCatalogStore.MergeWithExistingAsync(
+        blobs,
+        nodesetParser.ModelCatalog,
+        nodesetParser.FailedModelCatalogSourceBlobs,
+        log);
+    NodeSetModelCatalogStore.ApplyVersionMetadata(nodesetDocs, modelCatalog);
+    await NodeSetModelCatalogStore.WriteAsync(
+        blobs,
+        modelCatalog,
+        log);
     log.LogInformation("[PIPELINE] Phase=nodeset_parse Docs={N}", nodesetDocs.Count);
 
-    var v2SearchClient = new SearchIndexClient(
-        new Uri(searchEndpoint), new AzureKeyCredential(searchApiKey))
-        .GetSearchClient(IndexNameV2);
+    var v2SearchClient = v2IndexClient.GetSearchClient(IndexNameV2);
 
     if (nodesetDocs.Count > 0)
     {
@@ -784,6 +806,12 @@ static class SearchIndexFactory
             new SimpleField("source", SearchFieldDataType.String) { IsFilterable = true, IsFacetable = true },
             new SimpleField("namespace_uri", SearchFieldDataType.String) { IsFilterable = true },
             new SimpleField("publication_date", SearchFieldDataType.DateTimeOffset) { IsFilterable = true, IsSortable = true },
+            new SimpleField("node_id", SearchFieldDataType.String) { IsFilterable = true },
+            new SimpleField("model_uri", SearchFieldDataType.String) { IsFilterable = true },
+            new SimpleField("model_version", SearchFieldDataType.String) { IsFilterable = true },
+            new SimpleField("source_blob", SearchFieldDataType.String) { IsFilterable = true },
+            new SimpleField("type_definition_id", SearchFieldDataType.String) { IsFilterable = true },
+            new SimpleField("parent_node_id", SearchFieldDataType.String) { IsFilterable = true },
             new SearchableField("title"),
             new SearchableField("description") { AnalyzerName = LexicalAnalyzerName.EnMicrosoft },
             new SimpleField("popularity", SearchFieldDataType.Int64) { IsFilterable = true, IsSortable = true },

@@ -6,7 +6,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.36.1.42791",
-      "templateHash": "5547611234561225277"
+      "templateHash": "9407833132236244286"
     }
   },
   "parameters": {
@@ -60,6 +60,13 @@
         "description": "Optional: UA-CloudLibrary password"
       }
     },
+    "mcpAccessKey": {
+      "type": "securestring",
+      "minLength": 32,
+      "metadata": {
+        "description": "Independent application API key for MCP read, upload, mapping submission, and artifact download. Do not reuse the Azure AI Search admin key."
+      }
+    },
     "lockdownStorage": {
       "type": "bool",
       "defaultValue": false,
@@ -77,6 +84,8 @@
     "envName": "[format('{0}-env', parameters('prefix'))]",
     "jobName": "[format('{0}-pipeline-job', parameters('prefix'))]",
     "mcpAppName": "[format('{0}-mcp-server', parameters('prefix'))]",
+    "mappingWorkerName": "[format('{0}-mapping-worker', parameters('prefix'))]",
+    "mappingQueueName": "model-mapping-jobs",
     "logAnalyticsName": "[format('{0}-logs', parameters('prefix'))]",
     "workbookName": "[guid(resourceGroup().id, 'opcua-pipeline-dashboard')]",
     "vnetName": "[format('{0}-vnet', parameters('prefix'))]",
@@ -88,6 +97,8 @@
     "containerImage": "[if(empty(parameters('pipelineImage')), 'mcr.microsoft.com/dotnet/runtime:9.0', parameters('pipelineImage'))]",
     "cognitiveServicesOpenAIUserRole": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')]",
     "storageBlobDataContributorRole": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')]",
+    "storageQueueDataContributorRole": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')]",
+    "searchIndexDataReaderRole": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '1407120a-92aa-4202-b7e9-c0e197c71c8f')]",
     "acrPullRole": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')]",
     "workbookContent": "{\"version\":\"Notebook/1.0\",\"items\":[{\"type\":1,\"content\":{\"json\":\"# OPC UA Knowledge Base Pipeline Dashboard\\n\\nMonitors crawl + index pipeline for reference.opcfoundation.org\"},\"name\":\"header\"},{\"type\":3,\"content\":{\"version\":\"KqlItem/1.0\",\"query\":\"ContainerAppConsoleLogs_CL\\n| where ContainerGroupName_s startswith \\\"opcua-pipeline-job\\\"\\n| where Log_s has \\\"[PIPELINE]\\\"\\n| parse Log_s with * \\\"Phase=\\\" Phase:string \\\" Status=\\\" Status:string \\\" \\\" *\\n| project TimeGenerated, Phase, Status\\n| order by TimeGenerated desc\\n| take 20\",\"size\":1,\"title\":\"Recent Pipeline Events\",\"timeContext\":{\"durationMs\":604800000},\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\"},\"name\":\"pipeline-events\"},{\"type\":3,\"content\":{\"version\":\"KqlItem/1.0\",\"query\":\"ContainerAppConsoleLogs_CL\\n| where ContainerGroupName_s startswith \\\"opcua-pipeline-job\\\"\\n| where Log_s has \\\"[CRAWL]\\\" and Log_s has \\\"Downloaded=\\\"\\n| parse Log_s with * \\\"Downloaded=\\\" Downloaded:long \\\" Skipped=\\\" Skipped:long \\\" Errors=\\\" Errors:long \\\" Queued=\\\" Queued:long\\n| project TimeGenerated, Downloaded, Skipped, Errors, Queued\\n| order by TimeGenerated asc\",\"size\":0,\"title\":\"Crawl Progress Over Time\",\"timeContext\":{\"durationMs\":86400000},\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\",\"visualization\":\"linechart\",\"chartSettings\":{\"yAxis\":[\"Downloaded\",\"Queued\",\"Errors\"]}},\"name\":\"crawl-progress\"},{\"type\":3,\"content\":{\"version\":\"KqlItem/1.0\",\"query\":\"ContainerAppConsoleLogs_CL\\n| where ContainerGroupName_s startswith \\\"opcua-pipeline-job\\\"\\n| where Log_s has \\\"[CRAWL]\\\" and Log_s has \\\"Downloaded=\\\"\\n| parse Log_s with * \\\"Downloaded=\\\" Downloaded:long \\\" Skipped=\\\" Skipped:long \\\" Errors=\\\" Errors:long *\\n| summarize MaxDownloaded=max(Downloaded), MaxSkipped=max(Skipped), TotalErrors=max(Errors) by bin(TimeGenerated, 1h)\\n| order by TimeGenerated desc\\n| take 1\",\"size\":4,\"title\":\"Latest Crawl Stats\",\"timeContext\":{\"durationMs\":86400000},\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\",\"visualization\":\"tiles\",\"tileSettings\":{\"showBorder\":true}},\"name\":\"crawl-stats\"},{\"type\":3,\"content\":{\"version\":\"KqlItem/1.0\",\"query\":\"ContainerAppConsoleLogs_CL\\n| where ContainerGroupName_s startswith \\\"opcua-pipeline-job\\\"\\n| where Log_s has \\\"[INDEX]\\\" and Log_s has \\\"Phase=\\\"\\n| parse Log_s with * \\\"Phase=\\\" Phase:string \\\" \\\" *\\n| extend Embedded = extract(\\\"Embedded=([0-9]+)\\\", 1, Log_s)\\n| extend Uploaded = extract(\\\"Uploaded=([0-9]+)\\\", 1, Log_s)\\n| extend Chunks = extract(\\\"Chunks=([0-9]+)\\\", 1, Log_s)\\n| extend Parsed = extract(\\\"Parsed=([0-9]+)\\\", 1, Log_s)\\n| project TimeGenerated, Phase, Parsed, Chunks, Embedded, Uploaded\\n| order by TimeGenerated asc\",\"size\":0,\"title\":\"Index Progress Over Time\",\"timeContext\":{\"durationMs\":86400000},\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\",\"visualization\":\"linechart\"},\"name\":\"index-progress\"},{\"type\":3,\"content\":{\"version\":\"KqlItem/1.0\",\"query\":\"ContainerAppConsoleLogs_CL\\n| where ContainerGroupName_s startswith \\\"opcua-pipeline-job\\\"\\n| where Log_s has \\\"Error=\\\" or Log_s has \\\"error\\\" or Log_s has \\\"Warning\\\"\\n| project TimeGenerated, Log_s\\n| order by TimeGenerated desc\\n| take 50\",\"size\":1,\"title\":\"Errors & Warnings\",\"timeContext\":{\"durationMs\":604800000},\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\",\"visualization\":\"table\"},\"name\":\"errors\"},{\"type\":3,\"content\":{\"version\":\"KqlItem/1.0\",\"query\":\"ContainerAppConsoleLogs_CL\\n| where ContainerGroupName_s startswith \\\"opcua-pipeline-job\\\"\\n| where Log_s has \\\"[PIPELINE]\\\" and Log_s has \\\"TotalElapsedSec=\\\"\\n| parse Log_s with * \\\"TotalElapsedSec=\\\" ElapsedSec:long\\n| project TimeGenerated, DurationMin=ElapsedSec/60.0\\n| order by TimeGenerated desc\\n| take 10\",\"size\":1,\"title\":\"Execution History (Duration in Minutes)\",\"timeContext\":{\"durationMs\":2592000000},\"queryType\":0,\"resourceType\":\"microsoft.operationalinsights/workspaces\",\"visualization\":\"barchart\"},\"name\":\"exec-history\"}],\"isLocked\":false}\r\n"
   },
@@ -202,6 +213,24 @@
         "publicNetworkAccess": "[if(parameters('lockdownStorage'), 'Disabled', 'Enabled')]",
         "networkAcls": "[if(parameters('lockdownStorage'), createObject('defaultAction', 'Deny', 'bypass', 'AzureServices', 'ipRules', createArray(), 'virtualNetworkRules', createArray()), createObject('defaultAction', 'Allow', 'bypass', 'AzureServices', 'ipRules', createArray(), 'virtualNetworkRules', createArray()))]"
       }
+    },
+    "queueService": {
+      "type": "Microsoft.Storage/storageAccounts/queueServices",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}', variables('storageName'), 'default')]",
+      "properties": {},
+      "dependsOn": [
+        "storageAccount"
+      ]
+    },
+    "mappingQueue": {
+      "type": "Microsoft.Storage/storageAccounts/queueServices/queues",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}/{2}', variables('storageName'), 'default', variables('mappingQueueName'))]",
+      "properties": {},
+      "dependsOn": [
+        "queueService"
+      ]
     },
     "vnet": {
       "type": "Microsoft.Network/virtualNetworks",
@@ -324,6 +353,73 @@
       "dependsOn": [
         "blobPrivateDnsZone",
         "storagePrivateEndpoint"
+      ]
+    },
+    "queuePrivateDnsZone": {
+      "type": "Microsoft.Network/privateDnsZones",
+      "apiVersion": "2020-06-01",
+      "name": "privatelink.queue.core.windows.net",
+      "location": "global"
+    },
+    "queuePrivateDnsZoneLink": {
+      "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+      "apiVersion": "2020-06-01",
+      "name": "[format('{0}/{1}', 'privatelink.queue.core.windows.net', format('{0}-link', variables('vnetName')))]",
+      "location": "global",
+      "properties": {
+        "registrationEnabled": false,
+        "virtualNetwork": {
+          "id": "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+        }
+      },
+      "dependsOn": [
+        "queuePrivateDnsZone",
+        "vnet"
+      ]
+    },
+    "storageQueuePrivateEndpoint": {
+      "type": "Microsoft.Network/privateEndpoints",
+      "apiVersion": "2023-11-01",
+      "name": "[format('{0}-storage-queue-pe', parameters('prefix'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "subnet": {
+          "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('peSubnetName'))]"
+        },
+        "privateLinkServiceConnections": [
+          {
+            "name": "queue",
+            "properties": {
+              "privateLinkServiceId": "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]",
+              "groupIds": [
+                "queue"
+              ]
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "storageAccount",
+        "vnet"
+      ]
+    },
+    "storageQueuePrivateEndpointDnsGroup": {
+      "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+      "apiVersion": "2023-11-01",
+      "name": "[format('{0}/{1}', format('{0}-storage-queue-pe', parameters('prefix')), 'queue-dns-zone-group')]",
+      "properties": {
+        "privateDnsZoneConfigs": [
+          {
+            "name": "queue",
+            "properties": {
+              "privateDnsZoneId": "[resourceId('Microsoft.Network/privateDnsZones', 'privatelink.queue.core.windows.net')]"
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "queuePrivateDnsZone",
+        "storageQueuePrivateEndpoint"
       ]
     },
     "docai": {
@@ -472,6 +568,10 @@
             {
               "name": "search-api-key",
               "value": "[listAdminKeys('search', '2024-06-01-preview').primaryKey]"
+            },
+            {
+              "name": "mcp-access-key",
+              "value": "[parameters('mcpAccessKey')]"
             }
           ]
         },
@@ -503,7 +603,19 @@
                 },
                 {
                   "name": "MCP_API_KEY",
-                  "secretRef": "search-api-key"
+                  "secretRef": "mcp-access-key"
+                },
+                {
+                  "name": "MCP_UPLOAD_KEY",
+                  "secretRef": "mcp-access-key"
+                },
+                {
+                  "name": "MCP_ARTIFACT_KEY",
+                  "secretRef": "mcp-access-key"
+                },
+                {
+                  "name": "MCP_MAPPING_KEY",
+                  "secretRef": "mcp-access-key"
                 },
                 {
                   "name": "MCP_REQUIRE_AUTH",
@@ -539,6 +651,102 @@
         "search",
         "storageAccount",
         "storagePrivateEndpointDnsGroup"
+      ]
+    },
+    "mappingWorker": {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2025-01-01",
+      "name": "[variables('mappingWorkerName')]",
+      "location": "[parameters('location')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "environmentId": "[resourceId('Microsoft.App/managedEnvironments', variables('envName'))]",
+        "workloadProfileName": "Consumption",
+        "configuration": {
+          "activeRevisionsMode": "Single",
+          "registries": [
+            {
+              "server": "[reference('acr').loginServer]",
+              "identity": "system"
+            }
+          ],
+          "secrets": [
+            {
+              "name": "search-api-key",
+              "value": "[listAdminKeys('search', '2024-06-01-preview').primaryKey]"
+            }
+          ]
+        },
+        "template": {
+          "containers": [
+            {
+              "name": "mapping-worker",
+              "image": "[if(empty(parameters('pipelineImage')), 'mcr.microsoft.com/dotnet/aspnet:10.0', format('{0}/opcua-mcp-server:latest', reference('acr').loginServer))]",
+              "command": "[if(empty(parameters('pipelineImage')), createArray('/bin/sh'), createArray('dotnet'))]",
+              "args": "[if(empty(parameters('pipelineImage')), createArray('-c', 'while true; do sleep 3600; done'), createArray('OpcUaKb.McpServer.dll', '--mapping-worker'))]",
+              "resources": {
+                "cpu": "[json('2')]",
+                "memory": "4Gi"
+              },
+              "env": [
+                {
+                  "name": "STORAGE_ACCOUNT_NAME",
+                  "value": "[variables('storageName')]"
+                },
+                {
+                  "name": "MAPPING_QUEUE_NAME",
+                  "value": "[variables('mappingQueueName')]"
+                },
+                {
+                  "name": "MAPPING_PREFIX",
+                  "value": "model-mappings/jobs"
+                },
+                {
+                  "name": "SEARCH_ENDPOINT",
+                  "value": "[format('https://{0}.search.windows.net', variables('searchName'))]"
+                },
+                {
+                  "name": "SEARCH_API_KEY",
+                  "secretRef": "search-api-key"
+                },
+                {
+                  "name": "AOAI_ENDPOINT",
+                  "value": "[reference('foundry').endpoint]"
+                }
+              ]
+            }
+          ],
+          "scale": {
+            "minReplicas": 0,
+            "maxReplicas": 2,
+            "rules": [
+              {
+                "name": "mapping-queue",
+                "custom": {
+                  "type": "azure-queue",
+                  "metadata": {
+                    "accountName": "[variables('storageName')]",
+                    "queueName": "[variables('mappingQueueName')]",
+                    "queueLength": "1"
+                  },
+                  "identity": "system"
+                }
+              }
+            ]
+          }
+        }
+      },
+      "dependsOn": [
+        "acr",
+        "containerEnv",
+        "foundry",
+        "mappingQueue",
+        "search",
+        "storageAccount",
+        "storagePrivateEndpointDnsGroup",
+        "storageQueuePrivateEndpointDnsGroup"
       ]
     },
     "searchFoundryRoleAssignment": {
@@ -586,6 +794,21 @@
         "mcpServer"
       ]
     },
+    "mappingWorkerFoundryRoleAssignment": {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[format('Microsoft.CognitiveServices/accounts/{0}', variables('foundryName'))]",
+      "name": "[guid(resourceId('Microsoft.App/containerApps', variables('mappingWorkerName')), resourceId('Microsoft.CognitiveServices/accounts', variables('foundryName')), variables('cognitiveServicesOpenAIUserRole'))]",
+      "properties": {
+        "principalId": "[reference('mappingWorker', '2025-01-01', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal",
+        "roleDefinitionId": "[variables('cognitiveServicesOpenAIUserRole')]"
+      },
+      "dependsOn": [
+        "foundry",
+        "mappingWorker"
+      ]
+    },
     "pipelineJobStorageBlobContributor": {
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
@@ -616,6 +839,66 @@
         "storageAccount"
       ]
     },
+    "mappingWorkerStorageBlobContributor": {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[format('Microsoft.Storage/storageAccounts/{0}', variables('storageName'))]",
+      "name": "[guid(resourceId('Microsoft.App/containerApps', variables('mappingWorkerName')), resourceId('Microsoft.Storage/storageAccounts', variables('storageName')), 'StorageBlobDataContributor')]",
+      "properties": {
+        "principalId": "[reference('mappingWorker', '2025-01-01', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal",
+        "roleDefinitionId": "[variables('storageBlobDataContributorRole')]"
+      },
+      "dependsOn": [
+        "mappingWorker",
+        "storageAccount"
+      ]
+    },
+    "mcpServerStorageQueueContributor": {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[format('Microsoft.Storage/storageAccounts/{0}', variables('storageName'))]",
+      "name": "[guid(resourceId('Microsoft.App/containerApps', variables('mcpAppName')), resourceId('Microsoft.Storage/storageAccounts', variables('storageName')), 'StorageQueueDataContributor')]",
+      "properties": {
+        "principalId": "[reference('mcpServer', '2024-03-01', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal",
+        "roleDefinitionId": "[variables('storageQueueDataContributorRole')]"
+      },
+      "dependsOn": [
+        "mcpServer",
+        "storageAccount"
+      ]
+    },
+    "mappingWorkerStorageQueueContributor": {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[format('Microsoft.Storage/storageAccounts/{0}', variables('storageName'))]",
+      "name": "[guid(resourceId('Microsoft.App/containerApps', variables('mappingWorkerName')), resourceId('Microsoft.Storage/storageAccounts', variables('storageName')), 'StorageQueueDataContributor')]",
+      "properties": {
+        "principalId": "[reference('mappingWorker', '2025-01-01', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal",
+        "roleDefinitionId": "[variables('storageQueueDataContributorRole')]"
+      },
+      "dependsOn": [
+        "mappingWorker",
+        "storageAccount"
+      ]
+    },
+    "mappingWorkerSearchIndexDataReader": {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[format('Microsoft.Search/searchServices/{0}', variables('searchName'))]",
+      "name": "[guid(resourceId('Microsoft.App/containerApps', variables('mappingWorkerName')), resourceId('Microsoft.Search/searchServices', variables('searchName')), 'SearchIndexDataReader')]",
+      "properties": {
+        "principalId": "[reference('mappingWorker', '2025-01-01', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal",
+        "roleDefinitionId": "[variables('searchIndexDataReaderRole')]"
+      },
+      "dependsOn": [
+        "mappingWorker",
+        "search"
+      ]
+    },
     "pipelineJobAcrPull": {
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
@@ -644,6 +927,21 @@
       "dependsOn": [
         "acr",
         "mcpServer"
+      ]
+    },
+    "mappingWorkerAcrPull": {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[format('Microsoft.ContainerRegistry/registries/{0}', variables('acrName'))]",
+      "name": "[guid(resourceId('Microsoft.App/containerApps', variables('mappingWorkerName')), resourceId('Microsoft.ContainerRegistry/registries', variables('acrName')), 'AcrPull')]",
+      "properties": {
+        "principalId": "[reference('mappingWorker', '2025-01-01', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal",
+        "roleDefinitionId": "[variables('acrPullRole')]"
+      },
+      "dependsOn": [
+        "acr",
+        "mappingWorker"
       ]
     },
     "storageLifecyclePolicy": {
@@ -736,6 +1034,14 @@
       "type": "string",
       "value": "[format('https://{0}', reference('mcpServer').configuration.ingress.fqdn)]"
     },
+    "mappingWorkerName": {
+      "type": "string",
+      "value": "[variables('mappingWorkerName')]"
+    },
+    "mappingWorkerPrincipalId": {
+      "type": "string",
+      "value": "[reference('mappingWorker', '2025-01-01', 'full').identity.principalId]"
+    },
     "vnetId": {
       "type": "string",
       "value": "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
@@ -743,6 +1049,10 @@
     "storagePrivateEndpointId": {
       "type": "string",
       "value": "[resourceId('Microsoft.Network/privateEndpoints', format('{0}-storage-pe', parameters('prefix')))]"
+    },
+    "storageQueuePrivateEndpointId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Network/privateEndpoints', format('{0}-storage-queue-pe', parameters('prefix')))]"
     }
   }
 }

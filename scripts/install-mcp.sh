@@ -15,16 +15,16 @@ fail()  { echo -e "${RED}[FAIL]${NC}  $*"; exit 1; }
 MCP_SERVER_URL="https://opcua-kb-mcp-server.lemoncliff-5369bab2.westus3.azurecontainerapps.io/"
 KB_MCP_URL="https://opcua-kb-search.search.windows.net/knowledgebases/opcua-kb-kb/mcp?api-version=2025-11-01-preview"
 SEARCH_ENDPOINT="https://opcua-kb-search.search.windows.net"
-API_KEY="${SEARCH_API_KEY:-}"
+SEARCH_KEY="${SEARCH_API_KEY:-}"
+MCP_KEY="${MCP_API_KEY:-}"
 
 MODE="${1:-hosted}"  # hosted or local
 
-if [[ -z "$API_KEY" ]]; then
-  echo -n "Enter Search API key: "
-  read -r API_KEY
-  [[ -z "$API_KEY" ]] && fail "API key is required."
+if [[ -z "$SEARCH_KEY" ]]; then
+  echo -n "Enter Azure AI Search API key (for the KB endpoint): "
+  read -r SEARCH_KEY
+  [[ -z "$SEARCH_KEY" ]] && fail "Search API key is required."
 fi
-
 # ── Install dotnet tool (for local/stdio mode) ───────────────────────
 if [[ "$MODE" == "local" ]]; then
   info "Installing opcua-kb-mcp dotnet tool..."
@@ -35,6 +35,15 @@ if [[ "$MODE" == "local" ]]; then
     warn "dotnet not found — skipping tool install. Use hosted mode instead."
     MODE="hosted"
   fi
+fi
+
+# The requested local mode can fall back to hosted when dotnet is absent.
+# Validate the hosted credential after that decision so an empty API key is
+# never written to the client configuration.
+if [[ "$MODE" == "hosted" && -z "$MCP_KEY" ]]; then
+  echo -n "Enter MCP application API key: "
+  read -r MCP_KEY
+  [[ -z "$MCP_KEY" ]] && fail "MCP application API key is required."
 fi
 
 # ── Configure Copilot CLI ────────────────────────────────────────────
@@ -50,8 +59,8 @@ import json, os
 path = '$COPILOT_CONFIG'
 cfg = json.load(open(path)) if os.path.exists(path) else {'mcpServers': {}}
 cfg.setdefault('mcpServers', {})
-cfg['mcpServers']['opcua-kb'] = {'type': 'http', 'url': '$KB_MCP_URL', 'headers': {'api-key': '$API_KEY'}}
-cfg['mcpServers']['opcua-kb-tools'] = {'type': 'http', 'url': '$MCP_SERVER_URL', 'headers': {'api-key': '$API_KEY'}}
+cfg['mcpServers']['opcua-kb'] = {'type': 'http', 'url': '$KB_MCP_URL', 'headers': {'api-key': '$SEARCH_KEY'}}
+cfg['mcpServers']['opcua-kb-tools'] = {'type': 'http', 'url': '$MCP_SERVER_URL', 'headers': {'api-key': '$MCP_KEY'}}
 json.dump(cfg, open(path, 'w'), indent=2)
 " 2>/dev/null && ok "Copilot CLI configured (hosted)" || warn "Could not update Copilot config (python3 needed)"
   else
@@ -61,8 +70,8 @@ import json, os
 path = '$COPILOT_CONFIG'
 cfg = json.load(open(path)) if os.path.exists(path) else {'mcpServers': {}}
 cfg.setdefault('mcpServers', {})
-cfg['mcpServers']['opcua-kb'] = {'type': 'http', 'url': '$KB_MCP_URL', 'headers': {'api-key': '$API_KEY'}}
-cfg['mcpServers']['opcua-kb-tools'] = {'command': 'opcua-kb-mcp', 'args': ['--stdio'], 'env': {'SEARCH_ENDPOINT': '$SEARCH_ENDPOINT', 'SEARCH_API_KEY': '$API_KEY'}}
+cfg['mcpServers']['opcua-kb'] = {'type': 'http', 'url': '$KB_MCP_URL', 'headers': {'api-key': '$SEARCH_KEY'}}
+cfg['mcpServers']['opcua-kb-tools'] = {'command': 'opcua-kb-mcp', 'args': ['--stdio'], 'env': {'SEARCH_ENDPOINT': '$SEARCH_ENDPOINT', 'SEARCH_API_KEY': '$SEARCH_KEY'}}
 json.dump(cfg, open(path, 'w'), indent=2)
 " 2>/dev/null && ok "Copilot CLI configured (local stdio)" || warn "Could not update Copilot config (python3 needed)"
   fi
@@ -84,7 +93,7 @@ import json, os
 path = '''$CLAUDE_CONFIG'''
 cfg = json.load(open(path)) if os.path.exists(path) else {'mcpServers': {}}
 cfg.setdefault('mcpServers', {})
-cfg['mcpServers']['opcua-kb-tools'] = {'command': 'opcua-kb-mcp', 'args': ['--stdio'], 'env': {'SEARCH_ENDPOINT': '$SEARCH_ENDPOINT', 'SEARCH_API_KEY': '$API_KEY'}}
+cfg['mcpServers']['opcua-kb-tools'] = {'command': 'opcua-kb-mcp', 'args': ['--stdio'], 'env': {'SEARCH_ENDPOINT': '$SEARCH_ENDPOINT', 'SEARCH_API_KEY': '$SEARCH_KEY'}}
 json.dump(cfg, open(path, 'w'), indent=2)
 " 2>/dev/null && ok "Claude Desktop configured" || warn "Could not update Claude config (python3 needed)"
 fi
@@ -101,6 +110,8 @@ echo -e "  KB Endpoint:   ${BLUE}${KB_MCP_URL}${NC}"
 echo ""
 echo -e "  Available tools: search_nodes, get_type_hierarchy, get_spec_summary,"
 echo -e "    search_docs, count_nodes, validate_nodeset, compare_versions,"
-echo -e "    check_compliance, suggest_model"
+echo -e "    check_compliance, suggest_model, list_profile_groups, get_profile,"
+echo -e "    query_profiles, check_profile_conformance, create_companion_projection,"
+echo -e "    get_companion_projection"
 echo ""
 echo -e "${GREEN}════════════════════════════════════════════════════════════${NC}"
