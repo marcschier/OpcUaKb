@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UANodeSet xmlns="http://opcfoundation.org/UA/2011/03/UANodeSet.xsd">
+  <NamespaceUris>
+    <Uri>urn:example:live-server</Uri>
+  </NamespaceUris>
+  <Models>
+    <Model ModelUri="urn:example:live-server" Version="1.0.0" PublicationDate="2026-01-01T00:00:00Z">
+      <RequiredModel ModelUri="http://opcfoundation.org/UA/" Version="1.05.04" PublicationDate="2024-12-01T00:00:00Z" />
+    </Model>
+  </Models>
+  <Aliases>
+    <Alias Alias="HasTypeDefinition">i=40</Alias>
+    <Alias Alias="HasComponent">i=47</Alias>
+    <Alias Alias="HasProperty">i=46</Alias>
+    <Alias Alias="HasSubtype">i=45</Alias>
+    <Alias Alias="HasModellingRule">i=37</Alias>
+    <Alias Alias="Mandatory">i=78</Alias>
+    <Alias Alias="BaseObjectType">i=58</Alias>
+    <Alias Alias="BaseDataVariableType">i=63</Alias>
+    <Alias Alias="Double">i=11</Alias>
+  </Aliases>
+
+  <!-- Standard infrastructure intentionally included in the export. -->
+  <UAObject NodeId="i=2253" BrowseName="0:Server">
+    <DisplayName>Server</DisplayName>
+    <References>
+      <Reference ReferenceType="HasTypeDefinition">i=2004</Reference>
+      <Reference ReferenceType="i=35" IsForward="false">i=85</Reference>
+    </References>
+  </UAObject>
+  <UAVariable NodeId="i=2256" BrowseName="0:ServerStatus" DataType="i=862" ParentNodeId="i=2253">
+    <DisplayName>ServerStatus</DisplayName>
+    <References>
+      <Reference ReferenceType="HasTypeDefinition">i=63</Reference>
+      <Reference ReferenceType="HasComponent" IsForward="false">i=2253</Reference>
+    </References>
+  </UAVariable>
+
+  <UAObjectType NodeId="ns=1;s=VendorCompressorType" BrowseName="1:VendorCompressorType">
+    <DisplayName>Vendor Compressor Type</DisplayName>
+    <Description>Vendor-specific compressor with discharge pressure, motor temperature and start command.</Description>
+    <References>
+      <Reference ReferenceType="HasSubtype" IsForward="false">BaseObjectType</Reference>
+    </References>
+  </UAObjectType>
+
+  <UAObject NodeId="ns=1;s=Plant" BrowseName="1:Plant">
+    <DisplayName>Plant</DisplayName>
+    <Description>Compressed-air production area.</Description>
+    <References>
+      <Reference ReferenceType="HasTypeDefinition">BaseObjectType</Reference>
+      <Reference ReferenceType="i=35" IsForward="false">i=85</Reference>
+      <Reference ReferenceType="HasComponent">ns=1;s=CompressorA</Reference>
+    </References>
+  </UAObject>
+
+  <UAObject NodeId="ns=1;s=CompressorA" BrowseName="1:CompressorA" ParentNodeId="ns=1;s=Plant">
+    <DisplayName>Main Air Compressor</DisplayName>
+    <Description>Rotary compressor supplying the plant air header. It measures discharge pressure and motor winding temperature.</Description>
+    <References>
+      <Reference ReferenceType="HasTypeDefinition">ns=1;s=VendorCompressorType</Reference>
+      <Reference ReferenceType="HasComponent" IsForward="false">ns=1;s=Plant</Reference>
+      <Reference ReferenceType="HasComponent">ns=1;s=CompressorA.Pressure</Reference>
+      <Reference ReferenceType="HasComponent">ns=1;s=CompressorA.Temperature</Reference>
+      <Reference ReferenceType="HasComponent">ns=1;s=CompressorA.Start</Reference>
+    </References>
+  </UAObject>
+
+  <UAVariable NodeId="ns=1;s=CompressorA.Pressure" BrowseName="1:DischargePressure" DataType="Double" AccessLevel="3" UserAccessLevel="3" ParentNodeId="ns=1;s=CompressorA">
+    <DisplayName>Discharge Pressure</DisplayName>
+    <Description>Current compressor discharge pressure in bar.</Description>
+    <References>
+      <Reference ReferenceType="HasTypeDefinition">BaseDataVariableType</Reference>
+      <Reference ReferenceType="HasComponent" IsForward="false">ns=1;s=CompressorA</Reference>
+    </References>
+  </UAVariable>
+
+  <UAVariable NodeId="ns=1;s=CompressorA.Temperature" BrowseName="1:MotorTemperature" DataType="Double" AccessLevel="1" UserAccessLevel="1" ParentNodeId="ns=1;s=CompressorA">
+    <DisplayName>Motor Winding Temperature</DisplayName>
+    <Description>Measured motor winding temperature in degrees Celsius.</Description>
+    <References>
+      <Reference ReferenceType="HasTypeDefinition">BaseDataVariableType</Reference>
+      <Reference ReferenceType="HasComponent" IsForward="false">ns=1;s=CompressorA</Reference>
+    </References>
+  </UAVariable>
+
+  <UAMethod NodeId="ns=1;s=CompressorA.Start" BrowseName="1:Start" Executable="true" UserExecutable="true" ParentNodeId="ns=1;s=CompressorA">
+    <DisplayName>Start Compressor</DisplayName>
+    <Description>Starts the compressor.</Description>
+    <References>
+      <Reference ReferenceType="HasComponent" IsForward="false">ns=1;s=CompressorA</Reference>
+    </References>
+  </UAMethod>
+</UANodeSet>

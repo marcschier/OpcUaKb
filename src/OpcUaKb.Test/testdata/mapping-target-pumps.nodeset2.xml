@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UANodeSet xmlns="http://opcfoundation.org/UA/2011/03/UANodeSet.xsd">
+  <NamespaceUris>
+    <Uri>urn:test:companion:pumps</Uri>
+  </NamespaceUris>
+  <Models>
+    <Model ModelUri="urn:test:companion:pumps" Version="1.0.0" PublicationDate="2026-01-01T00:00:00Z">
+      <RequiredModel ModelUri="http://opcfoundation.org/UA/" Version="1.05.04" PublicationDate="2024-12-01T00:00:00Z" />
+    </Model>
+  </Models>
+  <Aliases>
+    <Alias Alias="HasTypeDefinition">i=40</Alias>
+    <Alias Alias="HasComponent">i=47</Alias>
+    <Alias Alias="HasSubtype">i=45</Alias>
+    <Alias Alias="HasModellingRule">i=37</Alias>
+    <Alias Alias="Mandatory">i=78</Alias>
+    <Alias Alias="Optional">i=80</Alias>
+    <Alias Alias="BaseObjectType">i=58</Alias>
+    <Alias Alias="BaseDataVariableType">i=63</Alias>
+    <Alias Alias="Double">i=11</Alias>
+  </Aliases>
+  <UAObjectType NodeId="ns=1;i=1001" BrowseName="1:PumpType">
+    <DisplayName>Pump Type</DisplayName>
+    <Description>Rotating equipment that moves a fluid and exposes pressure and temperature measurements.</Description>
+    <References>
+      <Reference ReferenceType="HasSubtype" IsForward="false">BaseObjectType</Reference>
+      <Reference ReferenceType="HasComponent">ns=1;i=1101</Reference>
+      <Reference ReferenceType="HasComponent">ns=1;i=1102</Reference>
+      <Reference ReferenceType="HasComponent">ns=1;i=1103</Reference>
+    </References>
+  </UAObjectType>
+  <UAVariable NodeId="ns=1;i=1101" BrowseName="1:DischargePressure" DataType="Double" ParentNodeId="ns=1;i=1001">
+    <DisplayName>Discharge Pressure</DisplayName>
+    <Description>Pressure at the discharge side.</Description>
+    <References>
+      <Reference ReferenceType="HasTypeDefinition">BaseDataVariableType</Reference>
+      <Reference ReferenceType="HasComponent" IsForward="false">ns=1;i=1001</Reference>
+      <Reference ReferenceType="HasModellingRule">Mandatory</Reference>
+    </References>
+  </UAVariable>
+  <UAVariable NodeId="ns=1;i=1102" BrowseName="1:Temperature" DataType="Double" ParentNodeId="ns=1;i=1001">
+    <DisplayName>Temperature</DisplayName>
+    <Description>Equipment temperature.</Description>
+    <References>
+      <Reference ReferenceType="HasTypeDefinition">BaseDataVariableType</Reference>
+      <Reference ReferenceType="HasComponent" IsForward="false">ns=1;i=1001</Reference>
+      <Reference ReferenceType="HasModellingRule">Optional</Reference>
+    </References>
+  </UAVariable>
+  <UAMethod NodeId="ns=1;i=1103" BrowseName="1:Start" ParentNodeId="ns=1;i=1001">
+    <DisplayName>Start</DisplayName>
+    <Description>Starts the equipment.</Description>
+    <References>
+      <Reference ReferenceType="HasComponent" IsForward="false">ns=1;i=1001</Reference>
+      <Reference ReferenceType="HasModellingRule">Mandatory</Reference>
+    </References>
+  </UAMethod>
+</UANodeSet>

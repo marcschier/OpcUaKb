@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<UANodeSet xmlns="http://opcfoundation.org/UA/2011/03/UANodeSet.xsd">
+  <NamespaceUris>
+    <Uri>urn:test:companion:machinery</Uri>
+  </NamespaceUris>
+  <Models>
+    <Model ModelUri="urn:test:companion:machinery" Version="1.0.0" PublicationDate="2026-01-01T00:00:00Z">
+      <RequiredModel ModelUri="http://opcfoundation.org/UA/" Version="1.05.04" PublicationDate="2024-12-01T00:00:00Z" />
+    </Model>
+  </Models>
+  <Aliases>
+    <Alias Alias="HasTypeDefinition">i=40</Alias>
+    <Alias Alias="HasComponent">i=47</Alias>
+    <Alias Alias="HasSubtype">i=45</Alias>
+    <Alias Alias="HasModellingRule">i=37</Alias>
+    <Alias Alias="Mandatory">i=78</Alias>
+    <Alias Alias="BaseObjectType">i=58</Alias>
+    <Alias Alias="BaseDataVariableType">i=63</Alias>
+    <Alias Alias="String">i=12</Alias>
+  </Aliases>
+  <UAObjectType NodeId="ns=1;i=2001" BrowseName="1:MachineType">
+    <DisplayName>Machine Type</DisplayName>
+    <Description>Base semantic representation of a machine with identification.</Description>
+    <References>
+      <Reference ReferenceType="HasSubtype" IsForward="false">BaseObjectType</Reference>
+      <Reference ReferenceType="HasComponent">ns=1;i=2101</Reference>
+    </References>
+  </UAObjectType>
+  <UAVariable NodeId="ns=1;i=2101" BrowseName="1:Manufacturer" DataType="String" ParentNodeId="ns=1;i=2001">
+    <DisplayName>Manufacturer</DisplayName>
+    <References>
+      <Reference ReferenceType="HasTypeDefinition">BaseDataVariableType</Reference>
+      <Reference ReferenceType="HasComponent" IsForward="false">ns=1;i=2001</Reference>
+      <Reference ReferenceType="HasModellingRule">Mandatory</Reference>
+    </References>
+  </UAVariable>
+</UANodeSet>
