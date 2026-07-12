@@ -26,6 +26,8 @@ public sealed record CompanionProjectionDurableJobRequest
     public required long InputSizeBytes { get; init; }
     public required string InputBlobName { get; init; }
     public required string SourceMode { get; init; }
+    public string? SourceRef { get; init; }
+    public string? SourceUrl { get; init; }
     public required CompanionProjectionJobOptions Options { get; init; }
     public required DateTimeOffset CreatedAt { get; init; }
 }

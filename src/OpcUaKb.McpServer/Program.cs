@@ -301,25 +301,33 @@ else
 
         if (mappingInspection == McpCallInspection.CreateCompanionProjection)
         {
-            if (string.IsNullOrEmpty(mappingApiKey))
+            // create_companion_projection is gated like the read tools: the
+            // mapping key is enforced only when the server requires auth
+            // (MCP_REQUIRE_AUTH=true). When anonymous reads are allowed it is
+            // permitted anonymously too — bounded by the anonymous rate limit —
+            // so MCP clients that don't forward the api-key header can invoke it.
+            if (requireAuth)
             {
-                context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
-                context.Response.ContentType = "application/json";
-                await context.Response.WriteAsync(
-                    """{"jsonrpc":"2.0","error":{"code":-32001,"message":"create_companion_projection is disabled because MCP_MAPPING_KEY, MCP_UPLOAD_KEY, and explicit MCP_API_KEY are not configured."},"id":null}""");
-                return;
-            }
+                if (string.IsNullOrEmpty(mappingApiKey))
+                {
+                    context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+                    context.Response.ContentType = "application/json";
+                    await context.Response.WriteAsync(
+                        """{"jsonrpc":"2.0","error":{"code":-32001,"message":"create_companion_projection is disabled because MCP_MAPPING_KEY, MCP_UPLOAD_KEY, and explicit MCP_API_KEY are not configured."},"id":null}""");
+                    return;
+                }
 
-            var providedMapping = context.Request.Headers.TryGetValue("api-key", out var mappingKey)
-                ? mappingKey.ToString()
-                : null;
-            if (!KeyEquals(providedMapping, mappingApiKey))
-            {
-                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-                context.Response.ContentType = "application/json";
-                await context.Response.WriteAsync(
-                    """{"jsonrpc":"2.0","error":{"code":-32000,"message":"Valid api-key header required for create_companion_projection."},"id":null}""");
-                return;
+                var providedMapping = context.Request.Headers.TryGetValue("api-key", out var mappingKey)
+                    ? mappingKey.ToString()
+                    : null;
+                if (!KeyEquals(providedMapping, mappingApiKey))
+                {
+                    context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                    context.Response.ContentType = "application/json";
+                    await context.Response.WriteAsync(
+                        """{"jsonrpc":"2.0","error":{"code":-32000,"message":"Valid api-key header required for create_companion_projection."},"id":null}""");
+                    return;
+                }
             }
 
             await next();

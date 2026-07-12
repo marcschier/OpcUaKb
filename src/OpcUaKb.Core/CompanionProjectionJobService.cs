@@ -77,6 +77,8 @@ public sealed class CompanionProjectionJobService
             InputSizeBytes = inputSize,
             InputBlobName = inputBlobName,
             SourceMode = SourceMode(nodesetXml, nodesetRef),
+            SourceRef = string.IsNullOrWhiteSpace(nodesetRef) ? null : nodesetRef,
+            SourceUrl = string.IsNullOrWhiteSpace(nodesetUrl) ? null : nodesetUrl,
             Options = normalizedOptions,
             CreatedAt = now,
         };
@@ -93,9 +95,14 @@ public sealed class CompanionProjectionJobService
             },
         };
 
-        await StageInputAsync(jobId, source, nodesetRef, inputSha256, cancellationToken);
-        await VerifyStagedInputAsync(
-            jobId, inputSha256, inputSize, cancellationToken);
+        // Fast-return: only inline sources are staged here (they cannot be
+        // re-fetched later). blob:/URL sources are staged by the worker via
+        // EnsureInputStagedAsync so the tool call returns promptly instead of
+        // blocking on private-endpoint blob round-trips.
+        if (string.IsNullOrWhiteSpace(nodesetRef) && string.IsNullOrWhiteSpace(nodesetUrl))
+        {
+            await StageFromSourceAsync(jobId, source, inputSha256, cancellationToken);
+        }
 
         try
         {
@@ -284,10 +291,13 @@ public sealed class CompanionProjectionJobService
             ? "inline"
             : !string.IsNullOrWhiteSpace(nodesetRef) ? "ref" : "url";
 
-    async Task StageInputAsync(
+    // Stage the source NodeSet into the job's content-addressed input.xml in a
+    // single pass: stream source -> input.xml while computing SHA256, then
+    // compare to the expected content hash. No SyncCopyFromUri (rejected behind
+    // private endpoints) and no separate verify GET.
+    async Task StageFromSourceAsync(
         string jobId,
         NodeSetSource source,
-        string? nodesetRef,
         string expectedSha256,
         CancellationToken cancellationToken)
     {
@@ -295,43 +305,13 @@ public sealed class CompanionProjectionJobService
         if ((await destination.ExistsAsync(cancellationToken)).Value)
             return;
 
-        if (TryGetBlobRefPath(nodesetRef, out var sourcePath))
-        {
-            var sourceBlob = _store.Container.GetBlobClient(sourcePath);
-            try
-            {
-                var copy = await destination.SyncCopyFromUriAsync(
-                    sourceBlob.Uri,
-                    new BlobCopyFromUriOptions
-                    {
-                        DestinationConditions = new BlobRequestConditions { IfNoneMatch = ETag.All },
-                        Metadata = new Dictionary<string, string>
-                        {
-                            ["sha256"] = expectedSha256,
-                        },
-                    },
-                    cancellationToken);
-                if (copy.Value.CopyStatus == CopyStatus.Success)
-                    return;
-                await destination.DeleteIfExistsAsync(cancellationToken: cancellationToken);
-            }
-            catch (RequestFailedException ex) when (ex.Status is 409 or 412)
-            {
-                return;
-            }
-            catch (RequestFailedException)
-            {
-                await destination.DeleteIfExistsAsync(cancellationToken: cancellationToken);
-                // Some private endpoint configurations reject copy-source
-                // authorization. Fall through to a bounded managed-identity read.
-            }
-        }
-
         await using var input = await source.OpenAsync();
         using var bounded = new SizeBoundedStream(input, _maxInputBytes, leaveInnerOpen: true);
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        using var tee = new HashingStream(bounded, hash, leaveInnerOpen: true);
         try
         {
-            await destination.UploadAsync(bounded, new BlobUploadOptions
+            await destination.UploadAsync(tee, new BlobUploadOptions
             {
                 Conditions = new BlobRequestConditions { IfNoneMatch = ETag.All },
                 HttpHeaders = new BlobHttpHeaders { ContentType = "application/xml" },
@@ -346,45 +326,48 @@ public sealed class CompanionProjectionJobService
         }
         catch (RequestFailedException ex) when (ex.Status is 409 or 412)
         {
-            // Another idempotent creator staged the same content.
+            // Another idempotent stager wrote the same content-addressed input.
+            return;
+        }
+
+        var actualSha256 = Convert.ToHexStringLower(hash.GetHashAndReset());
+        if (!string.Equals(actualSha256, expectedSha256, StringComparison.Ordinal))
+        {
+            await destination.DeleteIfExistsAsync(cancellationToken: cancellationToken);
+            throw new NodeSetLoadException(
+                "The source NodeSet changed while it was being staged. Retry the request so the job ID matches the staged bytes.");
         }
     }
 
-    static bool TryGetBlobRefPath(string? nodesetRef, out string path)
+    // Worker-side staging for deferred (blob:/URL) sources. Idempotent: returns
+    // immediately when input.xml already exists (inline jobs, retries, or an
+    // earlier attempt). Throws a terminal error when neither a staged input nor
+    // a re-fetchable source reference is available.
+    public async Task EnsureInputStagedAsync(
+        CompanionProjectionDurableJobRequest request,
+        CancellationToken cancellationToken = default)
     {
-        path = "";
-        if (string.IsNullOrWhiteSpace(nodesetRef)
-            || !nodesetRef.StartsWith("blob:", StringComparison.OrdinalIgnoreCase))
-            return false;
-        path = nodesetRef["blob:".Length..].TrimStart('/');
-        return path.Length > 0 && !path.Contains("..", StringComparison.Ordinal);
+        EnsureAvailable();
+        var destination = _store.GetInputBlob(request.JobId);
+        if ((await destination.ExistsAsync(cancellationToken)).Value)
+            return;
+
+        if (string.IsNullOrWhiteSpace(request.SourceRef)
+            && string.IsNullOrWhiteSpace(request.SourceUrl))
+        {
+            throw new CompanionProjectionTerminalException(
+                "Job input is not staged and no re-fetchable source reference is available.");
+        }
+
+        var source = await _loader.ResolveAsync(
+            null, request.SourceRef, request.SourceUrl, cancellationToken);
+        await StageFromSourceAsync(
+            request.JobId, source, request.InputSha256, cancellationToken);
     }
 
     void EnsureAvailable()
     {
         if (_unavailableReason is not null)
             throw new InvalidOperationException(_unavailableReason);
-    }
-
-    async Task VerifyStagedInputAsync(
-        string jobId,
-        string expectedSha256,
-        long expectedSize,
-        CancellationToken cancellationToken)
-    {
-        var blob = _store.GetInputBlob(jobId);
-        await using var staged = await blob.OpenReadAsync(
-            cancellationToken: cancellationToken);
-        var (actualSha256, actualSize) = await CompanionProjectionJobStore.HashAsync(
-            staged, _maxInputBytes, cancellationToken);
-        if (actualSize == expectedSize &&
-            string.Equals(actualSha256, expectedSha256, StringComparison.Ordinal))
-        {
-            return;
-        }
-
-        await blob.DeleteIfExistsAsync(cancellationToken: cancellationToken);
-        throw new NodeSetLoadException(
-            "The source NodeSet changed while it was being staged. Retry the request so the job ID matches the staged bytes.");
     }
 }

@@ -15,6 +15,7 @@ public sealed class CompanionProjectionWorker : BackgroundService
     readonly CompanionProjectionJobStore _store;
     readonly QueueClient _queue;
     readonly ICompanionProjectionProcessor _processor;
+    readonly CompanionProjectionJobService _jobs;
     readonly ILogger<CompanionProjectionWorker> _logger;
     readonly int _maxAttempts;
 
@@ -22,11 +23,13 @@ public sealed class CompanionProjectionWorker : BackgroundService
         CompanionProjectionJobStore store,
         QueueClient queue,
         ICompanionProjectionProcessor processor,
+        CompanionProjectionJobService jobs,
         ILogger<CompanionProjectionWorker> logger)
     {
         _store = store;
         _queue = queue;
         _processor = processor;
+        _jobs = jobs;
         _logger = logger;
         _maxAttempts = int.TryParse(
             Environment.GetEnvironmentVariable("MAPPING_MAX_ATTEMPTS"), out var attempts)
@@ -227,6 +230,10 @@ public sealed class CompanionProjectionWorker : BackgroundService
                         statusGate.Release();
                     }
                 });
+
+            // Stage deferred (blob:/URL) sources now; inline jobs and retries
+            // short-circuit when input.xml already exists.
+            await _jobs.EnsureInputStagedAsync(request, processingToken);
 
             await using var input = await _store.GetInputBlob(jobId)
                 .OpenReadAsync(cancellationToken: processingToken);
