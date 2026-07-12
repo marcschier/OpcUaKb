@@ -1,7 +1,7 @@
 {
   "name": "opcua-kb-mcp",
-  "version": "4.3.0",
-  "description": "OPC UA Knowledge Base MCP Server — 11 tools: structured search, RAG Q&A, validate/compliance/compare NodeSets, and modelling guidance for all OPC UA specifications and companion specs.",
+  "version": "4.5.0",
+  "description": "OPC UA Knowledge Base MCP Server — 17 tools: structured NodeSet search, RAG Q&A, validate/compliance/compare NodeSets, modelling guidance, the OPC UA Profile graph + conformance tools, and asynchronous live-server → companion-spec projection, across all OPC UA specifications and companion specs.",
   "publisher": "marcschier",
   "repository": "https://github.com/marcschier/OpcUaKb",
   "tools": [
@@ -48,6 +48,30 @@
     {
       "name": "suggest_model",
       "description": "Suggest OPC UA information model design based on a domain description."
+    },
+    {
+      "name": "list_profile_groups",
+      "description": "List OPC UA Profile groups (spec + version, e.g. UACore 1.05) with profile/conformance-unit counts and release-status mix."
+    },
+    {
+      "name": "get_profile",
+      "description": "Get a profile's graph neighborhood: status, required/optional conformance units, included profiles, and reverse 'included by' edges."
+    },
+    {
+      "name": "query_profiles",
+      "description": "Filter profiles by name fragment, group, and release status, then expand includes / included_by relationships."
+    },
+    {
+      "name": "check_profile_conformance",
+      "description": "Traverse the conformance graph in expand / satisfy / diff modes over transitive required/optional conformance units."
+    },
+    {
+      "name": "create_companion_projection",
+      "description": "Submit a live-server NodeSet2 (inline / blob: ref / allow-listed URL) to a durable async job that projects it onto official companion specs; returns a job ID."
+    },
+    {
+      "name": "get_companion_projection",
+      "description": "Poll a companion projection job and retrieve the generated NodeSet2, node-to-node mapping JSON/CSV, reports, and ZIP bundle."
     }
   ],
   "transport": {
@@ -62,7 +86,7 @@
     "http": {
       "url": "https://opcua-kb-mcp-server.lemoncliff-5369bab2.westus3.azurecontainerapps.io/",
       "headers": {
-        "api-key": { "description": "Search API key for authentication", "required": true }
+        "api-key": { "description": "Application api-key. Optional for tool calls when the server allows anonymous access (MCP_REQUIRE_AUTH=false); required for POST /upload-nodeset and GET /mapping-artifacts.", "required": false }
       }
     }
   }

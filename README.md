@@ -169,7 +169,7 @@ These tools accept a full NodeSet2 export from a live OPC UA server, analyze nam
 <tr>
 <td width="50%" valign="top">
 
-**`create_companion_projection`** — Submit a NodeSet through the same inline / `blob:` / allow-listed URL input modes. Stages the input privately, queues a durable mapping job, and returns a job ID. Target NodeIds are deterministic; unrelated strong matches may produce multiple companion-spec projections for the same source node.
+**`create_companion_projection`** — Submit a NodeSet through the same inline / `blob:` / allow-listed URL input modes. Stages the input privately, queues a durable mapping job, and returns a job ID **promptly** (`blob:`/URL inputs are staged by the worker, so the call never blocks on blob round-trips). Target NodeIds are deterministic; unrelated strong matches may produce multiple companion-spec projections for the same source node.
 
 </td>
 <td width="50%" valign="top">
@@ -232,6 +232,8 @@ https://<mcp-server-fqdn>/
 | Authenticated | Valid `api-key` header | Unlimited |
 | Anonymous | No key (per IP) | 100 req/min |
 | Blocked | `MCP_REQUIRE_AUTH=true` | 401 Unauthorized |
+
+All tool calls — including `create_companion_projection` — follow the tier table above: they work anonymously unless `MCP_REQUIRE_AUTH=true`. The HTTP write endpoints `POST /upload-nodeset` and `GET /mapping-artifacts/...` always require the `api-key` header (upload/artifact keys), independent of the anonymous tier.
 
 ## 🤖 Microsoft 365 Copilot Agent
 

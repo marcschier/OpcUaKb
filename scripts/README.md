@@ -180,7 +180,7 @@ dotnet run --project src/OpcUaKb.McpServer -- --stdio
 | `GPT_DEPLOYMENT` | | GPT model deployment name (default: `gpt-4o`) |
 | `MCP_API_KEY` | | Independent application key for authenticated custom-MCP access. Hosted deployments provision this separately from the Search admin key. |
 | `MCP_UPLOAD_KEY` | | Separate api-key for `POST /upload-nodeset`. Defaults to explicit `MCP_API_KEY`. |
-| `MCP_MAPPING_KEY` | | Required to submit `create_companion_projection`; defaults to `MCP_UPLOAD_KEY`, then explicit `MCP_API_KEY`. Never implicitly uses `SEARCH_API_KEY`. |
+| `MCP_MAPPING_KEY` | | api-key for `create_companion_projection`, enforced **only when `MCP_REQUIRE_AUTH=true`** (otherwise create is anonymous like the read tools). Defaults to `MCP_UPLOAD_KEY`, then explicit `MCP_API_KEY`. Never implicitly uses `SEARCH_API_KEY`. |
 | `MCP_ARTIFACT_KEY` | | Required to download private mapping artifacts; defaults to `MCP_UPLOAD_KEY`. |
 | `MCP_REQUIRE_AUTH` | | Set `true` to reject anonymous requests |
 | `MCP_ANON_RATE_LIMIT` | | Max requests/min for anonymous callers (default: 10) |

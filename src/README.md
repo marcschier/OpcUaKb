@@ -117,7 +117,7 @@ The MCP server is the single endpoint for all 17 tools including RAG Q&A and asy
 | `MCP_NODESET_URL_ALLOWLIST` | | `*.opcfoundation.org,raw.githubusercontent.com,objects.githubusercontent.com` | Comma-separated host allow-list for `nodeset_url`. `*` prefix is a wildcard. |
 | `MCP_UPLOAD_KEY` | | falls back to `MCP_API_KEY` | Separate api-key for the upload endpoint. Never falls back to `SEARCH_API_KEY`. |
 | `MCP_ARTIFACT_KEY` | | falls back to `MCP_UPLOAD_KEY` | Required by `GET /mapping-artifacts/{jobId}/{fileName}`. The endpoint fails closed if neither key is configured. |
-| `MCP_MAPPING_KEY` | | `MCP_UPLOAD_KEY`, then explicit `MCP_API_KEY` | Required to submit `create_companion_projection`. Never falls back implicitly to `SEARCH_API_KEY`; job creation fails closed if no write key is configured. |
+| `MCP_MAPPING_KEY` | | `MCP_UPLOAD_KEY`, then explicit `MCP_API_KEY` | api-key for `create_companion_projection`. Enforced **only when `MCP_REQUIRE_AUTH=true`**; otherwise create follows the same anonymous policy as the read tools (bounded by the anonymous rate limit). Never falls back implicitly to `SEARCH_API_KEY`. |
 | `MAPPING_QUEUE_NAME` | | `model-mapping-jobs` | Azure Storage Queue used by the asynchronous projection worker. |
 | `MAPPING_PREFIX` | | `model-mappings/jobs` | Private blob prefix for staged inputs, checkpoints, status, and generated artifacts. |
 
@@ -152,7 +152,7 @@ Tools are implemented as static classes with `[McpServerToolType]` and `[McpServ
 | `HashingStream` | Read-through tee that feeds every byte the caller pulls into an `IncrementalHash`. Powers the streaming `/upload-nodeset` endpoint — SHA-256 is computed in the same pass that uploads to blob storage, no whole-payload buffering. |
 | `AddressSpaceNodeSetReader` | Streaming full-AddressSpace parser used by the projection engine. Canonicalizes ExpandedNodeIds and retains descriptions, access, types, references, values, and browse paths. |
 | `CompanionProjectionEngine` | Candidate retrieval, constrained semantic reasoning, exact official-model declaration expansion, multi-spec projection, confidence gates, and gateway mapping generation. |
-| `CompanionProjectionJobService` | Durable blob/queue job submission and status/result access for large mapping jobs. |
+| `CompanionProjectionJobService` | Durable blob/queue job submission and status/result access for large mapping jobs. `create` returns promptly after hashing + enqueue; the queue worker stages `blob:`/URL inputs in a single-pass hashing copy (`EnsureInputStagedAsync`) so the tool call never blocks on private-endpoint blob round-trips. |
 
 ### Live-server projection workflow
 
