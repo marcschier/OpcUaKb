@@ -16,7 +16,7 @@ static class CheckProfileConformanceTool
         "whose optionality changed (e.g. comparing two versions).")]
     public static async Task<string> CheckProfileConformance(
         ProfileGraphService graph,
-        [Description("Mode: expand | satisfy | diff.")] string mode,
+        [Description("Conformance analysis mode.")] ConformanceMode mode,
         [Description("Primary profile (name, profileUri, or 'guid|pg'). Required for expand and diff.")]
         string? profile = null,
         [Description("Second profile for mode=diff (name, profileUri, or 'guid|pg').")]
@@ -24,7 +24,7 @@ static class CheckProfileConformanceTool
         [Description("For mode=satisfy: comma- or newline-separated supported conformance unit names " +
             "(or guids).")] string? supported_units = null,
         [Description("Optional profile group filter (substring) to scope mode=satisfy.")] string? group = null,
-        [Description("Release status scope: released (default), rc, draft, all.")] string status = "released",
+        [Description("Release status scope (default released).")] ReleaseStatus status = ReleaseStatus.Released,
         [Description("Max rows to return (1-200, default 60).")] int top = 60)
     {
         if (!graph.Available)
@@ -35,11 +35,12 @@ static class CheckProfileConformanceTool
         try { idx = await graph.GetAsync(); }
         catch (Exception ex) { return $"Could not load the profile graph: {ex.Message}"; }
 
-        return (mode ?? "").ToLowerInvariant() switch
+        var statusWire = status.Wire();
+        return mode switch
         {
-            "expand" => Expand(idx, profile, status),
-            "satisfy" => Satisfy(idx, supported_units, group, status, top),
-            "diff" => Diff(idx, profile, profile_b, status),
+            ConformanceMode.Expand => Expand(idx, profile, statusWire),
+            ConformanceMode.Satisfy => Satisfy(idx, supported_units, group, statusWire, top),
+            ConformanceMode.Diff => Diff(idx, profile, profile_b, statusWire),
             _ => "Invalid mode. Use one of: expand, satisfy, diff.",
         };
     }

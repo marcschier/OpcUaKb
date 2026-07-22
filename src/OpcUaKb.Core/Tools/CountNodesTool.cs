@@ -13,33 +13,29 @@ static class CountNodesTool
         "'what data types are most common?'. By default counts only latest version nodes.")]
     public static async Task<string> CountNodes(
         SearchService search,
-        [Description("Facet to group by: node_class, spec_part, modelling_rule, data_type, source")] string facet,
-        [Description("Optional filter by node class: ObjectType, Variable, Method, DataType")] string? node_class = null,
+        [Description("Facet to group by.")] NodeCountFacet facet,
+        [Description("Optional filter by node class.")] NodeClass? node_class = null,
         [Description("Optional filter by companion spec name")] string? spec = null,
-        [Description("Optional filter by modelling rule")] string? modelling_rule = null,
-        [Description("Optional filter by source: 'opcfoundation' or 'cloudlib'")] string? source = null,
+        [Description("Optional filter by modelling rule")] ModellingRule? modelling_rule = null,
+        [Description("Optional filter by source.")] SpecSource? source = null,
         [Description(VersionFilter.ModeDescription)] string? version_mode = null,
-        [Description("Filter by specific spec version (e.g., v104, v105). Overrides version_mode.")] string? spec_version = null,
         [Description("Max facet values to return (default 50)")] int top = 50)
     {
-        var validFacets = new HashSet<string> { "node_class", "spec_part", "modelling_rule", "data_type", "source" };
-        if (!validFacets.Contains(facet))
-            return $"Invalid facet '{facet}'. Must be one of: {string.Join(", ", validFacets)}";
-
+        var facetWire = facet.Wire();
         top = Math.Clamp(top, 1, 100);
 
         var filters = new List<string> { "(content_type eq 'nodeset' or content_type eq 'cloudlib_nodeset')" };
-        if (!string.IsNullOrWhiteSpace(node_class))
-            filters.Add($"node_class eq '{node_class}'");
+        if (node_class is { } nc)
+            filters.Add($"node_class eq '{nc}'");
         if (!string.IsNullOrWhiteSpace(spec))
             filters.Add(SpecFilter.Match(spec));
-        if (!string.IsNullOrWhiteSpace(modelling_rule))
-            filters.Add($"modelling_rule eq '{modelling_rule}'");
-        if (!string.IsNullOrWhiteSpace(source))
-            filters.Add($"source eq '{source.ToLowerInvariant()}'");
+        if (modelling_rule is { } mr)
+            filters.Add($"modelling_rule eq '{mr}'");
+        if (source is { } src)
+            filters.Add($"source eq '{src.Wire()}'");
 
         // Apply version filter
-        var versionFilter = VersionFilter.BuildVersionFilter(version_mode, spec_version);
+        var versionFilter = VersionFilter.BuildVersionFilter(version_mode);
         if (versionFilter != null)
             filters.Add(versionFilter);
 
@@ -48,9 +44,9 @@ static class CountNodesTool
         // For the 'spec_part' facet: prefer the new spec_id field; fall back to legacy spec_part
         // if spec_id is unset on the underlying docs. NodeSet content predates the v2 schema,
         // so spec_id may be null on legacy index docs.
-        string facetField = facet;
+        string facetField = facetWire;
         IList<FacetResult>? facetResults = null;
-        if (facet == "spec_part")
+        if (facet == NodeCountFacet.SpecPart)
         {
             var trySpecId = await search.FacetSearchAsync(filter, [$"spec_id,count:{top}"]);
             if (trySpecId.TryGetValue("spec_id", out var idResults) && idResults.Count > 0)
@@ -62,8 +58,8 @@ static class CountNodesTool
 
         if (facetResults == null)
         {
-            var facets = await search.FacetSearchAsync(filter, [$"{facet},count:{top}"]);
-            facets.TryGetValue(facet, out facetResults);
+            var facets = await search.FacetSearchAsync(filter, [$"{facetWire},count:{top}"]);
+            facets.TryGetValue(facetWire, out facetResults);
         }
 
         if (facetResults == null || facetResults.Count == 0)
@@ -71,7 +67,7 @@ static class CountNodesTool
 
         var sb = new StringBuilder();
         sb.AppendLine($"Node counts by {facetField}:");
-        VersionFilter.AppendVersionNote(sb, version_mode, spec_version, false);
+        VersionFilter.AppendVersionNote(sb, version_mode, false);
         sb.AppendLine();
 
         var total = facetResults.Sum(f => f.Count ?? 0);

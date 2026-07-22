@@ -192,7 +192,7 @@ All search tools default to the **latest spec version** with automatic fallback 
 | | `previous` | One version before latest |
 | | `oldest` | Earliest available version |
 | | `all` | Search across all versions |
-| `spec_version` | `v104`, `v105`, `v200`, etc. | Specific version (overrides `version_mode`) |
+| | `v104`, `v105`, `v200`, etc. | A specific spec version |
 
 ## 🚀 Deploy
 

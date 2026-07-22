@@ -9,7 +9,7 @@
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>opcua-kb-mcp</ToolCommandName>
     <PackageId>OpcUaKb.McpServer</PackageId>
-    <Description>OPC UA Knowledge Base MCP Server — 11 tools for searching specs, RAG Q&amp;A, validating NodeSets, checking compliance, and modelling assistance. Connects to Azure AI Search index of all OPC UA specifications and companion specs.</Description>
+    <Description>OPC UA Knowledge Base MCP Server — 17 tools for searching specs, RAG Q&amp;A, validating NodeSets, checking compliance, profile-graph conformance, and live-server companion-spec projection. Connects to an Azure AI Search index of all OPC UA specifications and companion specs.</Description>
     <Authors>Marc Schier</Authors>
     <PackageProjectUrl>https://github.com/marcschier/OpcUaKb</PackageProjectUrl>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

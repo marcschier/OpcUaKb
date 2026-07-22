@@ -19,12 +19,12 @@ static partial class ListSpecsTool
         "Results default to popularity-sorted (downloads desc). By default returns only latest versions.")]
     public static async Task<string> ListSpecs(
         SearchService search,
-        [Description("Filter by source: 'opcfoundation' (official specs) or 'cloudlib' (UA-CloudLibrary). Omit for all.")] string? source = null,
+        [Description("Filter by source (official specs vs UA-CloudLibrary). Omit for all.")] SpecSource? source = null,
         [Description("When true AND source='cloudlib', only return cloudlib entries whose namespace is NOT already " +
             "in the opcfoundation index OR whose version differs from the opcfoundation version. " +
             "Answers 'which CloudLib nodesets aren't already in our companion spec coverage?'")] bool unique_to_source = false,
         [Description("Version mode: 'latest' (default), 'all' to include all versions")] string? version_mode = "latest",
-        [Description("Sort order: 'popularity' (default — most downloaded first), 'name' (alphabetical), 'date' (newest publication first)")] string? order_by = "popularity",
+        [Description("Sort order (default popularity — most downloaded first).")] SpecListOrder order_by = SpecListOrder.Popularity,
         [Description("Max results (1-500, default 200)")] int top = 200)
     {
         top = Math.Clamp(top, 1, 500);
@@ -40,8 +40,8 @@ static partial class ListSpecsTool
             "(spec_part eq null or spec_part ne 'AllSpecs')",
         };
 
-        if (!string.IsNullOrWhiteSpace(source))
-            filters.Add($"source eq '{source.ToLowerInvariant()}'");
+        if (source is { } src)
+            filters.Add($"source eq '{src.Wire()}'");
 
         // unique_to_source filtering is done client-side for version-aware comparison
 
@@ -51,11 +51,12 @@ static partial class ListSpecsTool
 
         var filter = string.Join(" and ", filters);
 
-        var orderBy = (order_by ?? "popularity").Trim().ToLowerInvariant();
-        var orderByClause = orderBy switch
+        var orderByLabel = order_by.Wire();
+        // spec_part is not sortable in the index, so "name" is fetched with a safe order
+        // (popularity) and sorted by name client-side below.
+        var orderByClause = order_by switch
         {
-            "name" => "spec_part asc",
-            "date" => "publication_date desc",
+            SpecListOrder.Date => "publication_date desc",
             _ => "popularity desc",
         };
 
@@ -115,16 +116,16 @@ static partial class ListSpecsTool
             .ToList();
 
         if (rows.Count == 0)
-            return $"No specs found matching source='{source ?? "any"}', version_mode='{mode}'.";
+            return $"No specs found matching source='{source?.Wire() ?? "any"}', version_mode='{mode}'.";
 
         // Cross-query opcfoundation summaries when showing cloudlib — enables version comparison
         Dictionary<string, List<string>>? opcfVersionsByNs = null;
-        bool isCloudLib = string.Equals(source, "cloudlib", StringComparison.OrdinalIgnoreCase);
+        bool isCloudLib = source == SpecSource.CloudLib;
         if (isCloudLib || unique_to_source)
         {
             opcfVersionsByNs = new(StringComparer.OrdinalIgnoreCase);
             // If we already queried both sources (source=null), extract from existing rows
-            if (string.IsNullOrWhiteSpace(source))
+            if (source is null)
             {
                 foreach (var r in rows.Where(r => r.Source == "opcfoundation" && !string.IsNullOrEmpty(r.Ns)))
                     AddVersion(opcfVersionsByNs, r.Ns!, r.Version);
@@ -166,6 +167,10 @@ static partial class ListSpecsTool
         }
 
         // Apply top limit after client-side filtering
+        if (order_by == SpecListOrder.Name)
+            rows = rows
+                .OrderBy(r => !string.IsNullOrEmpty(r.Title) ? r.Title : r.SpecPart, StringComparer.OrdinalIgnoreCase)
+                .ToList();
         var totalFiltered = rows.Count;
         if (rows.Count > top)
             rows = rows.Take(top).ToList();
@@ -177,7 +182,7 @@ static partial class ListSpecsTool
         if (unique_to_source)
             header += " (cloudlib entries NOT in opcfoundation or with different version)";
         sb.AppendLine(header);
-        sb.AppendLine($"  opcfoundation: {opcfCount}, cloudlib: {cloudCount}; sorted by {orderBy}");
+        sb.AppendLine($"  opcfoundation: {opcfCount}, cloudlib: {cloudCount}; sorted by {orderByLabel}");
         sb.AppendLine();
 
         int rank = 0;

@@ -18,9 +18,9 @@ static class QueryProfilesTool
         string? query = null,
         [Description("Optional profile group filter (case-insensitive substring, e.g. 'UACore 1.05', 'DI').")]
         string? group = null,
-        [Description("Release status scope: released (default), rc, draft, all.")] string status = "released",
-        [Description("Relationship to expand for each match: none (default), includes (direct included " +
-            "profiles), included_by (profiles that include the match).")] string relationship = "none",
+        [Description("Release status scope (default released).")] ReleaseStatus status = ReleaseStatus.Released,
+        [Description("Relationship to expand for each match (default none).")]
+        ProfileRelationship relationship = ProfileRelationship.None,
         [Description("Max profiles to return (1-200, default 50).")] int top = 50)
     {
         if (!graph.Available)
@@ -31,8 +31,9 @@ static class QueryProfilesTool
         try { idx = await graph.GetAsync(); }
         catch (Exception ex) { return $"Could not load the profile graph: {ex.Message}"; }
 
+        var statusWire = status.Wire();
         var matches = idx.Graph.Profiles
-            .Where(p => ProfileStatus.Allows(p.Status, status))
+            .Where(p => ProfileStatus.Allows(p.Status, statusWire))
             .Where(p => string.IsNullOrWhiteSpace(query)
                 || (p.Name?.Contains(query, StringComparison.OrdinalIgnoreCase) ?? false))
             .Where(p => string.IsNullOrWhiteSpace(group)
@@ -42,11 +43,10 @@ static class QueryProfilesTool
             .ToList();
 
         if (matches.Count == 0)
-            return $"No profiles match query='{query}' group='{group}' status='{status}'.";
+            return $"No profiles match query='{query}' group='{group}' status='{statusWire}'.";
 
-        var rel = (relationship ?? "none").ToLowerInvariant();
         var sb = new StringBuilder();
-        sb.AppendLine($"Profiles matching query='{query}' group='{group}' status='{status}' — {matches.Count} match(es):");
+        sb.AppendLine($"Profiles matching query='{query}' group='{group}' status='{statusWire}' — {matches.Count} match(es):");
         sb.AppendLine();
         foreach (var p in matches.Take(top))
         {
@@ -54,12 +54,12 @@ static class QueryProfilesTool
             if (!string.IsNullOrWhiteSpace(p.ProfileUri)) sb.AppendLine($"    {p.ProfileUri}");
             sb.AppendLine($"    conformance units: {p.ConformanceUnits.Count}, includes: {p.Includes.Count}");
 
-            if (rel == "includes")
+            if (relationship == ProfileRelationship.Includes)
             {
                 foreach (var inc in p.Includes.OrderBy(i => i.IsOptional))
                     sb.AppendLine($"      → includes {(inc.IsOptional ? "[opt] " : "")}{ProfName(idx, inc.Guid, inc.Pg)}");
             }
-            else if (rel == "included_by")
+            else if (relationship == ProfileRelationship.IncludedBy)
             {
                 idx.IncludingByKey.TryGetValue(p.Key, out var by);
                 foreach (var e in (by ?? []).OrderBy(e => e.Profile.Name))

@@ -11,7 +11,8 @@ static class TypeHierarchyTool
         "(member counts are not reported for DataTypes). " +
         "Use this to answer questions like 'what is the largest ObjectType', " +
         "'show the inheritance chain for ServerType', or " +
-        "'show the supertype chain for AnalogUnitType'.")]
+        "'show the supertype chain for AnalogUnitType'. " +
+        "Returns the supertype chain plus declared, inherited, and total member counts.")]
     public static async Task<string> GetTypeHierarchy(
         SearchService search,
         [Description("Type browse name to look up — ObjectType, VariableType, or DataType (e.g., DesignType, ServerType, AnalogUnitType, Int32)")] string type_name,

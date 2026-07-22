@@ -9,7 +9,8 @@ static class SearchDocsRagTool
         "the knowledge base. Uses Azure AI Search retrieval + GPT-4o for natural language answers " +
         "with specification references. Best for general questions about OPC UA concepts, protocol " +
         "details, services, security models, or any specification content. " +
-        "For structured NodeSet queries (specific ObjectTypes, Variables, Methods), use search_nodes instead.")]
+        "For structured NodeSet queries (specific ObjectTypes, Variables, Methods), use search_nodes instead. " +
+        "Returns an AI-synthesized natural-language answer with specification references.")]
     public static async Task<string> SearchDocsRag(
         KbService kb,
         [Description("Natural language question about OPC UA specifications " +

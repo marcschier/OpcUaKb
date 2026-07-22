@@ -1,7 +1,9 @@
 using System.Net;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.Http;
@@ -16,6 +18,7 @@ using Azure.Storage.Blobs.Models;
 using Azure.Storage.Blobs.Specialized;
 using Azure.Storage.Queues;
 using ModelContextProtocol.AspNetCore;
+using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -90,8 +93,8 @@ else if (useStdio)
     builder.Services.AddSingleton(_ => CreateNodeSetLoader(storage.Container));
     builder.Services
         .AddMcpServer(o => o.ServerInfo = new() { Name = "opcua-kb", Version = "1.0.0" })
-        .WithStdioServerTransport()
-        .WithToolsFromAssembly(typeof(SearchNodesTool).Assembly);
+        .WithStdioServerTransport();
+    AddHardenedTools(builder.Services);
     await builder.Build().RunAsync();
 }
 else
@@ -119,8 +122,8 @@ else
 
     builder.Services
         .AddMcpServer(o => o.ServerInfo = new() { Name = "opcua-kb", Version = "1.0.0" })
-        .WithHttpTransport(o => o.Stateless = true)
-        .WithToolsFromAssembly(typeof(SearchNodesTool).Assembly);
+        .WithHttpTransport(o => o.Stateless = true);
+    AddHardenedTools(builder.Services);
 
     // Configuration. We split two keys:
     //   • MCP_API_KEY (read) — gates anonymous read tier (falls back to
@@ -655,6 +658,32 @@ static NodeSetLoader CreateNodeSetLoader(BlobContainerClient? container)
     return new NodeSetLoader(client, container);
 }
 
+// Registers every [McpServerTool] in OpcUaKb.Core as a DI-resolved McpServerTool
+// singleton (the same shape WithToolsFromAssembly uses, so DI-injected parameters like
+// SearchService are still recognized and excluded from the input schema), each wrapped so
+// its published input schema always declares a "required" array.
+// mcpgrade S003: the .NET MCP SDK / MEAI omits the JSON-Schema "required" array on tools
+// whose parameters are all optional, forcing models to guess which are optional. The
+// AIJsonSchemaCreateOptions transform only reaches per-type nodes, not the assembled root
+// object, so the fix is applied by patching each tool's final ProtocolTool schema.
+static void AddHardenedTools(IServiceCollection services)
+{
+    foreach (var type in typeof(SearchNodesTool).Assembly.GetTypes())
+    {
+        if (type.GetCustomAttribute<McpServerToolTypeAttribute>() is null)
+            continue;
+        foreach (var method in type.GetMethods(
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance))
+        {
+            if (method.GetCustomAttribute<McpServerToolAttribute>() is null)
+                continue;
+            var toolMethod = method;
+            services.AddSingleton<McpServerTool>(sp => new RequiredArraySchemaTool(
+                McpServerTool.Create(toolMethod, (object?)null, new McpServerToolCreateOptions { Services = sp })));
+        }
+    }
+}
+
 static async Task<McpCallInspection> InspectMappingCallAsync(
     HttpRequest request,
     int maxBytes,
@@ -730,4 +759,38 @@ enum McpCallInspection
     Other,
     CreateCompanionProjection,
     Oversized,
+}
+
+// Wraps a tool so its published input schema always declares a "required" array
+// (empty when every parameter is optional). See AddHardenedTools / mcpgrade S003.
+sealed class RequiredArraySchemaTool(McpServerTool inner) : DelegatingMcpServerTool(inner)
+{
+    Tool? _patched;
+
+    public override Tool ProtocolTool
+    {
+        get
+        {
+            if (_patched is not null)
+                return _patched;
+
+            var tool = base.ProtocolTool;
+            var schema = tool.InputSchema;
+            if (schema.ValueKind == JsonValueKind.Object
+                && JsonObject.Create(schema) is { } node
+                && node.TryGetPropertyValue("type", out var typeNode)
+                && typeNode is JsonValue typeValue
+                && typeValue.TryGetValue<string>(out var typeName)
+                && typeName == "object"
+                && node.ContainsKey("properties")
+                && !node.ContainsKey("required"))
+            {
+                node["required"] = new JsonArray();
+                tool.InputSchema = JsonSerializer.SerializeToElement(node);
+            }
+
+            _patched = tool;
+            return tool;
+        }
+    }
 }

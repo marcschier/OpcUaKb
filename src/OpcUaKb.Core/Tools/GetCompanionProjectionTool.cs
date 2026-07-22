@@ -10,7 +10,8 @@ static class GetCompanionProjectionTool
      Description("Get durable status, checkpoints, progress counters, errors, and artifact references for " +
         "a companion projection job. Poll this after create_companion_projection. When completed, each " +
         "artifact includes a private download_url under /mapping-artifacts; call it with the configured " +
-        "MCP_ARTIFACT_KEY (or MCP_UPLOAD_KEY fallback) in the api-key header. No SAS or public blob URLs are returned.")]
+        "MCP_ARTIFACT_KEY (or MCP_UPLOAD_KEY fallback) in the api-key header. No SAS or public blob URLs are returned. " +
+        "Returns the job's state, progress counters, errors, and — when complete — artifact references with private download URLs.")]
     public static async Task<string> GetCompanionProjection(
         CompanionProjectionJobService jobs,
         [Description("Content-derived job ID returned by create_companion_projection, e.g. cp-{40 lowercase hex characters}.")]

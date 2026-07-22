@@ -20,13 +20,13 @@ static class SearchDocsTool
      Description("Search OPC UA specification documentation (HTML pages, tables, diagrams). " +
         "Use this for questions about OPC UA concepts, protocol details, services, " +
         "security models, or any non-NodeSet specification content. " +
-        "By default searches the latest spec version; use version_mode to control.")]
+        "By default searches the latest spec version; use version_mode to control. " +
+        "Returns ranked specification excerpts (page text, tables, and diagrams) with spec references.")]
     public static async Task<string> SearchDocs(
         SearchService search,
         [Description("Search query about OPC UA specifications")] string query,
         [Description("Optional spec part filter (e.g., Part4, Part5, DI, PackML)")] string? spec = null,
         [Description(VersionFilter.ModeDescription)] string? version_mode = null,
-        [Description("Filter by specific spec version (e.g., v104, v105). Overrides version_mode.")] string? spec_version = null,
         [Description("Max results (1-20, default 10)")] int top = 10)
     {
         top = Math.Clamp(top, 1, 20);
@@ -47,14 +47,14 @@ static class SearchDocsTool
             "spec_id", "spec_title", "section_id", "section_number", "section_path", "breadcrumb", "figures",
         };
         var (results, usedFallback) = await VersionFilter.SearchWithFallbackAsync(
-            search, query, filters, select, top, version_mode, spec_version);
+            search, query, filters, select, top, version_mode);
 
         if (results.Count == 0)
             return "No documentation found matching the query.";
 
         var sb = new StringBuilder();
         sb.AppendLine($"Found {results.Count} result(s):");
-        VersionFilter.AppendVersionNote(sb, version_mode, spec_version, usedFallback);
+        VersionFilter.AppendVersionNote(sb, version_mode, usedFallback);
         sb.AppendLine();
 
         foreach (var r in results)

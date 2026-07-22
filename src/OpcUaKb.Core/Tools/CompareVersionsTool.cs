@@ -9,13 +9,14 @@ static class CompareVersionsTool
      Description("Compare two versions of an OPC UA companion specification's NodeSet to identify " +
         "added, removed, and changed nodes. Classifies changes as backward-compatible or breaking " +
         "per OPC 11030 §3 (Rules for backward compatibility). " +
-        "Use this to assess migration impact between spec versions.")]
+        "Use this to assess migration impact between spec versions. " +
+        "Returns the added, removed, and changed nodes, each classified as backward-compatible or breaking.")]
     public static async Task<string> CompareVersions(
         SearchService search,
         [Description("Companion spec name (e.g., DI, Pumps, PlasticsRubber)")] string spec,
         [Description("Older version (e.g., v104)")] string old_version,
         [Description("Newer version (e.g., v105)")] string new_version,
-        [Description("Node class to compare (optional, e.g., ObjectType, Variable). Default: all.")] string? node_class = null)
+        [Description("Node class to compare (optional). Default: all.")] NodeClass? node_class = null)
     {
         // Fetch nodes from old version — try opcfoundation first, then cloudlib
         string contentType = "nodeset";
@@ -34,7 +35,7 @@ static class CompareVersionsTool
         if (oldNodes.Count == 0 && newNodes.Count == 0)
         {
             var specMatch = SpecFilter.Match(spec);
-            var nodeClassClause = !string.IsNullOrWhiteSpace(node_class)
+            var nodeClassClause = node_class is not null
                 ? $" and node_class eq '{node_class}'" : "";
             var prevFilter = $"content_type eq 'cloudlib_nodeset' and {specMatch} and version_rank eq 2{nodeClassClause}";
             var latestFilter = $"content_type eq 'cloudlib_nodeset' and {specMatch} and version_rank eq 1{nodeClassClause}";
@@ -229,7 +230,7 @@ static class CompareVersionsTool
     }
 
     static async Task<List<SearchService.SearchResult>> FetchVersionNodes(
-        SearchService search, string spec, string version, string contentType, string? nodeClass)
+        SearchService search, string spec, string version, string contentType, NodeClass? nodeClass)
     {
         // Prefer spec_id (new v2 schema) but accept legacy spec_part. If spec looks like an
         // OPC-XXXX identifier we lean toward spec_id; otherwise the OR form is sufficient.
@@ -243,7 +244,7 @@ static class CompareVersionsTool
             specMatch,
             $"spec_version eq '{version}'"
         };
-        if (!string.IsNullOrWhiteSpace(nodeClass))
+        if (nodeClass is not null)
             filters.Add($"node_class eq '{nodeClass}'");
         var select = new[] { "browse_name", "node_class", "parent_type", "modelling_rule", "data_type" };
         return await search.SearchAsync("*", string.Join(" and ", filters), select, 1000);

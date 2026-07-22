@@ -14,7 +14,7 @@ static class SpecSummaryTool
     public static async Task<string> GetSpecSummary(
         SearchService search,
         [Description("Companion spec name (e.g., DI, Pumps, PlasticsRubber). Omit for cross-spec master summary.")] string? spec = null,
-        [Description("Optional filter by source: 'opcfoundation' or 'cloudlib'")] string? source = null)
+        [Description("Optional filter by source.")] SpecSource? source = null)
     {
         string filter;
         string query;
@@ -31,8 +31,8 @@ static class SpecSummaryTool
             query = "*";
         }
 
-        if (!string.IsNullOrWhiteSpace(source))
-            filter += $" and source eq '{source.ToLowerInvariant()}'";
+        if (source is { } sourceValue)
+            filter += $" and source eq '{sourceValue.Wire()}'";
 
         var results = await search.SearchAsync(query, filter,
             ["section_title", "spec_part", "page_chunk", "title", "description", "publication_date", "namespace_uri", "source"], 3);

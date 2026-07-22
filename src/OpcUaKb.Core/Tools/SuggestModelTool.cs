@@ -10,7 +10,9 @@ static class SuggestModelTool
         "or device to model. Recommends ObjectTypes, Variables, Methods, DataTypes, and which " +
         "existing companion specs and base types to reuse (DI, Machinery, IA, etc.). " +
         "Follows OPC 11030 Modelling Best Practices. " +
-        "Use this when starting a new companion specification or extending an existing one.")]
+        "Use this when starting a new companion specification or extending an existing one. " +
+        "Returns a design recommendation: suggested ObjectTypes, Variables, Methods, and DataTypes plus base " +
+        "types and companion specs to reuse.")]
     public static async Task<string> SuggestModel(
         SearchService search,
         [Description("Description of the domain, device, or system to model (e.g., 'a CNC milling machine with spindle speed, tool changer, and job management')")] string description,

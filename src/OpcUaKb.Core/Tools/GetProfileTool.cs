@@ -11,12 +11,14 @@ static class GetProfileTool
         "(mandatory vs optional), the profiles it directly includes, and the profiles that include it " +
         "(reverse edges). Resolve by profile name (e.g. 'Standard UA Server Profile'), profileUri " +
         "(http://opcfoundation.org/UA-Profile/...), or graph key 'guid|pg'. For transitive expansion " +
-        "across included profiles use check_profile_conformance mode=expand.")]
+        "across included profiles use check_profile_conformance mode=expand. " +
+        "Returns the profile's description, status, group, required conformance units, and the profiles it " +
+        "includes and is included by.")]
     public static async Task<string> GetProfile(
         ProfileGraphService graph,
         [Description("Profile name, profileUri, or graph key 'guid|pg'.")] string profile,
-        [Description("Status scope when resolving by name/uri: released (default), rc, draft, all.")]
-        string status = "released")
+        [Description("Release status scope when resolving by name/uri (default released).")]
+        ReleaseStatus status = ReleaseStatus.Released)
     {
         if (!graph.Available)
             return "Profile graph is not configured on this server (STORAGE_ACCOUNT_NAME not set).";
@@ -25,7 +27,8 @@ static class GetProfileTool
         try { idx = await graph.GetAsync(); }
         catch (Exception ex) { return $"Could not load the profile graph: {ex.Message}"; }
 
-        var p = idx.ResolveProfile(profile, status) ?? idx.ResolveProfile(profile, "all");
+        var statusWire = status.Wire();
+        var p = idx.ResolveProfile(profile, statusWire) ?? idx.ResolveProfile(profile, "all");
         if (p == null)
             return $"No profile found matching '{profile}'. Try query_profiles to search by fragment.";
 

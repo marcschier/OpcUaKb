@@ -19,19 +19,19 @@ static class VersionFilter
     /// Builds the OData filter clause for version filtering.
     /// Returns null if no version filter should be applied.
     /// </summary>
-    public static string? BuildVersionFilter(string? versionMode, string? specVersion)
+    public static string? BuildVersionFilter(string? version)
     {
-        // Explicit spec_version takes priority
-        if (!string.IsNullOrWhiteSpace(specVersion))
-            return $"spec_version eq '{specVersion}'";
+        var v = version?.Trim();
+        // A specific version like "v104"/"v105" filters directly.
+        if (!string.IsNullOrEmpty(v) && v.StartsWith('v'))
+            return $"spec_version eq '{v}'";
 
-        return (versionMode?.ToLowerInvariant()) switch
+        return (v?.ToLowerInvariant()) switch
         {
             null or "" or "latest" => "is_latest eq true",
             "previous" => "version_rank eq 2",
             "oldest" => "version_rank gt 1",  // will sort desc by rank to get oldest
             "all" => null,  // no filter
-            _ when versionMode.StartsWith('v') => $"spec_version eq '{versionMode}'",
             _ => "is_latest eq true",
         };
     }
@@ -43,9 +43,9 @@ static class VersionFilter
     public static async Task<(List<SearchService.SearchResult> results, bool usedFallback)> SearchWithFallbackAsync(
         SearchService search, string? query, List<string> baseFilters,
         IEnumerable<string>? select, int top,
-        string? versionMode, string? specVersion, int minResultsForFallback = 3)
+        string? version, int minResultsForFallback = 3)
     {
-        var versionFilter = BuildVersionFilter(versionMode, specVersion);
+        var versionFilter = BuildVersionFilter(version);
         var filters = new List<string>(baseFilters);
         if (versionFilter != null)
             filters.Add(versionFilter);
@@ -69,17 +69,18 @@ static class VersionFilter
     }
 
     /// <summary>Appends a version context note to the output.</summary>
-    public static void AppendVersionNote(StringBuilder sb, string? versionMode, string? specVersion, bool usedFallback)
+    public static void AppendVersionNote(StringBuilder sb, string? version, bool usedFallback)
     {
+        var v = version?.Trim();
         if (usedFallback)
             sb.AppendLine("ℹ️ Few results in latest version — showing results from all versions.");
-        else if (!string.IsNullOrWhiteSpace(specVersion))
-            sb.AppendLine($"📌 Filtered to version: {specVersion}");
-        else if (versionMode is "previous")
+        else if (!string.IsNullOrEmpty(v) && v.StartsWith('v'))
+            sb.AppendLine($"📌 Filtered to version: {v}");
+        else if (string.Equals(v, "previous", StringComparison.OrdinalIgnoreCase))
             sb.AppendLine("📌 Showing results from the previous spec version.");
-        else if (versionMode is "oldest")
+        else if (string.Equals(v, "oldest", StringComparison.OrdinalIgnoreCase))
             sb.AppendLine("📌 Showing results from the oldest available spec version.");
-        else if (versionMode is "all")
+        else if (string.Equals(v, "all", StringComparison.OrdinalIgnoreCase))
             sb.AppendLine("📌 Showing results from all spec versions.");
     }
 }

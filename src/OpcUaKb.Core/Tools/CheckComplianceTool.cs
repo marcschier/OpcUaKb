@@ -14,7 +14,9 @@ static class CheckComplianceTool
         "(a) `nodeset_xml` for tiny snippets (≤30 KB hard cap); " +
         "(b) `nodeset_ref` of the form `blob:uploads/{sha256}.xml` returned by POST /upload-nodeset, " +
         "or `blob:nodesets/...` for pipeline-indexed NodeSets; " +
-        "(c) `nodeset_url` pointing at an allow-listed https URL. Use (b) or (c) for real NodeSets.")]
+        "(c) `nodeset_url` pointing at an allow-listed https URL. Use (b) or (c) for real NodeSets. " +
+        "Returns a compliance report of missing mandatory/optional nodes, data-type mismatches, incorrect " +
+        "modelling rules, and extra nodes.")]
     public static async Task<string> CheckCompliance(
         SearchService search,
         NodeSetLoader loader,
