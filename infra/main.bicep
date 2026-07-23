@@ -36,6 +36,29 @@ param mcpAccessKey string
 @description('When true, set storage publicNetworkAccess=Disabled and require VNet/private-endpoint access only. Toggle on after the first pipeline run has validated the deployment end-to-end.')
 param lockdownStorage bool = false
 
+// ── MCP server security (opt-in; defaults preserve anonymous/api-key behaviour) ──
+@description('MCP auth mode: apikey (default — anonymous + api-key) or entra (require Entra ID bearer tokens issued for this server).')
+@allowed([
+  'apikey'
+  'entra'
+])
+param mcpAuthMode string = 'apikey'
+
+@description('Entra ID tenant ID — required when mcpAuthMode=entra.')
+param entraTenantId string = ''
+
+@description('Client (application) ID of the dedicated Entra app registration for this server — required when mcpAuthMode=entra.')
+param entraClientId string = ''
+
+@description('Required scope (scp claim) for MCP access, e.g. Mcp.Tools. Empty = any valid token issued for this resource.')
+param mcpRequiredScope string = ''
+
+@description('Canonical public URL of this server for RFC 9728 Protected Resource Metadata (e.g. the Front Door endpoint). Required when mcpAuthMode=entra.')
+param mcpResourceHost string = ''
+
+@description('Front Door ID (X-Azure-FDID) to lock ingress to the approved edge. Empty = no edge lock (non-breaking).')
+param mcpFrontDoorId string = ''
+
 // ── Derived names ────────────────────────────────────────────────────
 var searchName = '${prefix}-search'
 var foundryName = '${prefix}-foundry'
@@ -602,6 +625,32 @@ resource mcpServer 'Microsoft.App/containerApps@2024-03-01' = {
               // Higher limit to accommodate Microsoft 365 Copilot agent traffic
               // (Copilot infra shares egress IPs across tenants)
               value: '100'
+            }
+            // ── Opt-in secure mode (see SECURITY.md). Defaults keep the
+            //    current anonymous/api-key behaviour so nothing breaks. ──
+            {
+              name: 'MCP_AUTH_MODE'
+              value: mcpAuthMode
+            }
+            {
+              name: 'AZURE_AD_TENANT_ID'
+              value: entraTenantId
+            }
+            {
+              name: 'AZURE_AD_CLIENT_ID'
+              value: entraClientId
+            }
+            {
+              name: 'MCP_REQUIRED_SCOPE'
+              value: mcpRequiredScope
+            }
+            {
+              name: 'MCP_RESOURCE_HOST'
+              value: mcpResourceHost
+            }
+            {
+              name: 'MCP_FRONTDOOR_ID'
+              value: mcpFrontDoorId
             }
           ]
         }

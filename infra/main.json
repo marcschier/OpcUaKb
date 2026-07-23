@@ -6,7 +6,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.36.1.42791",
-      "templateHash": "9407833132236244286"
+      "templateHash": "17153732183630162102"
     }
   },
   "parameters": {
@@ -72,6 +72,52 @@
       "defaultValue": false,
       "metadata": {
         "description": "When true, set storage publicNetworkAccess=Disabled and require VNet/private-endpoint access only. Toggle on after the first pipeline run has validated the deployment end-to-end."
+      }
+    },
+    "mcpAuthMode": {
+      "type": "string",
+      "defaultValue": "apikey",
+      "allowedValues": [
+        "apikey",
+        "entra"
+      ],
+      "metadata": {
+        "description": "MCP auth mode: apikey (default — anonymous + api-key) or entra (require Entra ID bearer tokens issued for this server)."
+      }
+    },
+    "entraTenantId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Entra ID tenant ID — required when mcpAuthMode=entra."
+      }
+    },
+    "entraClientId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Client (application) ID of the dedicated Entra app registration for this server — required when mcpAuthMode=entra."
+      }
+    },
+    "mcpRequiredScope": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Required scope (scp claim) for MCP access, e.g. Mcp.Tools. Empty = any valid token issued for this resource."
+      }
+    },
+    "mcpResourceHost": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Canonical public URL of this server for RFC 9728 Protected Resource Metadata (e.g. the Front Door endpoint). Required when mcpAuthMode=entra."
+      }
+    },
+    "mcpFrontDoorId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Front Door ID (X-Azure-FDID) to lock ingress to the approved edge. Empty = no edge lock (non-breaking)."
       }
     }
   },
@@ -624,6 +670,30 @@
                 {
                   "name": "MCP_ANON_RATE_LIMIT",
                   "value": "100"
+                },
+                {
+                  "name": "MCP_AUTH_MODE",
+                  "value": "[parameters('mcpAuthMode')]"
+                },
+                {
+                  "name": "AZURE_AD_TENANT_ID",
+                  "value": "[parameters('entraTenantId')]"
+                },
+                {
+                  "name": "AZURE_AD_CLIENT_ID",
+                  "value": "[parameters('entraClientId')]"
+                },
+                {
+                  "name": "MCP_REQUIRED_SCOPE",
+                  "value": "[parameters('mcpRequiredScope')]"
+                },
+                {
+                  "name": "MCP_RESOURCE_HOST",
+                  "value": "[parameters('mcpResourceHost')]"
+                },
+                {
+                  "name": "MCP_FRONTDOOR_ID",
+                  "value": "[parameters('mcpFrontDoorId')]"
                 }
               ]
             }

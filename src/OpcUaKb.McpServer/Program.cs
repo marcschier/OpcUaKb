@@ -6,6 +6,8 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
@@ -18,6 +20,8 @@ using Azure.Storage.Blobs.Models;
 using Azure.Storage.Blobs.Specialized;
 using Azure.Storage.Queues;
 using ModelContextProtocol.AspNetCore;
+using ModelContextProtocol.AspNetCore.Authentication;
+using ModelContextProtocol.Authentication;
 using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
@@ -148,6 +152,66 @@ else
     var anonRateLimit = int.TryParse(Environment.GetEnvironmentVariable("MCP_ANON_RATE_LIMIT"), out var arl) ? arl : 10;
     var authRateLimit = int.TryParse(Environment.GetEnvironmentVariable("MCP_AUTH_RATE_LIMIT"), out var atrl) ? atrl : 0;
 
+    // ── Opt-in Entra ID secure mode (MCP_AUTH_MODE=entra) ─────────────────
+    // Default "apikey" preserves the existing anonymous/api-key behaviour so
+    // current consumers (Hosted Agent, Copilot CLI) keep working. When set to
+    // "entra", every request (except discovery) must carry a valid Entra ID
+    // bearer token issued FOR THIS SERVER (audience-validated — no passthrough),
+    // and — if MCP_REQUIRED_SCOPE is set — that scope. The MCP SDK's AddMcp
+    // authentication scheme serves RFC 9728 Protected Resource Metadata and the
+    // WWW-Authenticate challenge; token validation is done by JwtBearer against
+    // the tenant's published metadata. See SECURITY.md.
+    var authMode = (Environment.GetEnvironmentVariable("MCP_AUTH_MODE") ?? "apikey").Trim().ToLowerInvariant();
+    var entraTenantId = Environment.GetEnvironmentVariable("AZURE_AD_TENANT_ID");
+    var entraClientId = Environment.GetEnvironmentVariable("AZURE_AD_CLIENT_ID");
+    var entraAudience = Environment.GetEnvironmentVariable("MCP_RESOURCE_AUDIENCE")
+        ?? (string.IsNullOrWhiteSpace(entraClientId) ? null : $"api://{entraClientId}");
+    var entraScope = Environment.GetEnvironmentVariable("MCP_REQUIRED_SCOPE");
+    var resourceHost = Environment.GetEnvironmentVariable("MCP_RESOURCE_HOST");
+    var entraMode = authMode == "entra";
+    if (entraMode && (string.IsNullOrWhiteSpace(entraTenantId)
+        || string.IsNullOrWhiteSpace(entraClientId)
+        || string.IsNullOrWhiteSpace(resourceHost)))
+    {
+        // Fail closed: never silently downgrade to anonymous when secure mode is requested.
+        throw new InvalidOperationException(
+            "MCP_AUTH_MODE=entra requires AZURE_AD_TENANT_ID, AZURE_AD_CLIENT_ID and MCP_RESOURCE_HOST.");
+    }
+    var entraAuthority = entraMode ? $"https://login.microsoftonline.com/{entraTenantId}/v2.0" : null;
+
+    // Optional edge lock: when MCP_FRONTDOOR_ID is set, only requests carrying
+    // the matching X-Azure-FDID header (i.e. routed through the approved Front
+    // Door) are accepted. No-op until configured, so it is non-breaking.
+    var frontDoorId = Environment.GetEnvironmentVariable("MCP_FRONTDOOR_ID");
+
+    if (entraMode)
+    {
+        builder.Services
+            .AddAuthentication(options =>
+            {
+                options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+                options.DefaultChallengeScheme = McpAuthenticationDefaults.AuthenticationScheme;
+            })
+            .AddJwtBearer(options =>
+            {
+                options.Authority = entraAuthority;
+                options.Audience = entraAudience;
+                options.MapInboundClaims = false;
+                options.TokenValidationParameters.ValidateIssuer = true;
+                options.TokenValidationParameters.ValidateAudience = true;
+                options.TokenValidationParameters.ValidateLifetime = true;
+            })
+            .AddMcp(options =>
+            {
+                var metadata = new ProtectedResourceMetadata { Resource = resourceHost! };
+                metadata.AuthorizationServers.Add(entraAuthority!);
+                if (!string.IsNullOrWhiteSpace(entraScope))
+                    metadata.ScopesSupported.Add(entraScope);
+                options.ResourceMetadata = metadata;
+            });
+        builder.Services.AddAuthorization();
+    }
+
     // Rate limiting — partitioned by authenticated vs anonymous (per-IP)
     builder.Services.AddRateLimiter(options =>
     {
@@ -202,29 +266,96 @@ else
 
     var app = builder.Build();
 
-    // Middleware order: rate limiting → OAuth endpoint handling → auth → MCP
+    // Middleware order: edge lock → rate limiting → (Entra auth | api-key) → MCP
+
+    // Edge lock: reject requests that didn't arrive through the approved Front
+    // Door (only enforced when MCP_FRONTDOOR_ID is configured — non-breaking otherwise).
+    if (!string.IsNullOrWhiteSpace(frontDoorId))
+    {
+        app.Use(async (context, next) =>
+        {
+            var fdid = context.Request.Headers["X-Azure-FDID"].ToString();
+            if (!string.Equals(fdid, frontDoorId, StringComparison.Ordinal))
+            {
+                context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                context.Response.ContentType = "application/json";
+                await context.Response.WriteAsync(
+                    """{"error":"forbidden","error_description":"Requests must arrive through the approved front door."}""");
+                return;
+            }
+            await next();
+        });
+    }
+
     app.UseRateLimiter();
 
-    // Handle OAuth discovery and fallback endpoints explicitly.
-    // MCP clients MUST check /.well-known/oauth-authorization-server per RFC 8414.
-    // Returning 404 tells clients there is no authorization server — auth is not required.
-    // The fallback /authorize, /token, /register paths return 400 with a clear message
-    // instead of falling through to the MCP handler (which would return confusing errors).
-    app.Map("/authorize", () => Results.Json(
-        new { error = "unsupported_grant_type", error_description = "This server uses api-key header authentication. OAuth is not supported." },
-        statusCode: 400));
-    app.Map("/token", () => Results.Json(
-        new { error = "unsupported_grant_type", error_description = "This server uses api-key header authentication. OAuth is not supported." },
-        statusCode: 400));
-    app.Map("/register", () => Results.Json(
-        new { error = "invalid_client", error_description = "This server uses api-key header authentication. OAuth is not supported." },
-        statusCode: 400));
+    if (entraMode)
+    {
+        // Entra ID bearer auth. UseAuthentication runs JwtBearer (validates the
+        // token's issuer + audience, so tokens issued for another resource are
+        // rejected — no passthrough) and the MCP authentication handler (serves
+        // RFC 9728 Protected Resource Metadata + the WWW-Authenticate challenge).
+        app.UseAuthentication();
+        app.Use(async (context, next) =>
+        {
+            var path = context.Request.Path;
+            // Discovery endpoints (PRM / OAuth metadata) are anonymous by design.
+            if (path.StartsWithSegments("/.well-known"))
+            {
+                await next();
+                return;
+            }
+            if (!(context.User.Identity?.IsAuthenticated ?? false))
+            {
+                app.Logger.LogInformation("[AUTH] Event=challenge Path={Path} Reason=missing_or_invalid_token", path.ToString());
+                await context.ChallengeAsync();
+                return;
+            }
+            if (!string.IsNullOrWhiteSpace(entraScope))
+            {
+                var scp = context.User.FindFirst("scp")?.Value;
+                var scopes = scp?.Split(' ', StringSplitOptions.RemoveEmptyEntries) ?? [];
+                if (!scopes.Contains(entraScope, StringComparer.Ordinal))
+                {
+                    app.Logger.LogInformation("[AUTH] Event=forbidden Path={Path} Reason=insufficient_scope", path.ToString());
+                    context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                    context.Response.ContentType = "application/json";
+                    await context.Response.WriteAsync(
+                        $$"""{"error":"insufficient_scope","error_description":"Token is missing the required scope '{{entraScope}}'."}""");
+                    return;
+                }
+            }
+            await next();
+        });
+    }
+    else
+    {
+        // api-key mode: there is no OAuth authorization server. Tell spec-compliant
+        // clients so explicitly (400) instead of falling through to confusing MCP errors.
+        app.Map("/authorize", () => Results.Json(
+            new { error = "unsupported_grant_type", error_description = "This server uses api-key header authentication. OAuth is not supported." },
+            statusCode: 400));
+        app.Map("/token", () => Results.Json(
+            new { error = "unsupported_grant_type", error_description = "This server uses api-key header authentication. OAuth is not supported." },
+            statusCode: 400));
+        app.Map("/register", () => Results.Json(
+            new { error = "invalid_client", error_description = "This server uses api-key header authentication. OAuth is not supported." },
+            statusCode: 400));
+    }
 
     // Auth middleware — block or allow anonymous based on config.
     // /upload-nodeset always uses its own explicit MCP_UPLOAD_KEY/MCP_API_KEY
     // (never SEARCH_API_KEY) — see below.
     app.Use(async (context, next) =>
     {
+        // In Entra secure mode, bearer auth + scope enforcement above already
+        // governs every request; skip the api-key gating entirely.
+        if (entraMode)
+        {
+            await next();
+            return;
+        }
+
         var isUploadEndpoint = context.Request.Path.StartsWithSegments("/upload-nodeset");
         var isArtifactEndpoint = context.Request.Path.StartsWithSegments("/mapping-artifacts");
 

@@ -1,0 +1,266 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.36.1.42791",
+      "templateHash": "13426227953393845203"
+    }
+  },
+  "parameters": {
+    "prefix": {
+      "type": "string",
+      "defaultValue": "opcua-kb",
+      "metadata": {
+        "description": "Prefix used to derive resource names (must match main.bicep)"
+      }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "Location for Key Vault (Front Door is a global resource)"
+      }
+    },
+    "mcpAppName": {
+      "type": "string",
+      "defaultValue": "[format('{0}-mcp-server', parameters('prefix'))]",
+      "metadata": {
+        "description": "Container App name of the MCP server that Front Door fronts"
+      }
+    },
+    "frontDoorSku": {
+      "type": "string",
+      "defaultValue": "Standard_AzureFrontDoor",
+      "allowedValues": [
+        "Standard_AzureFrontDoor",
+        "Premium_AzureFrontDoor"
+      ],
+      "metadata": {
+        "description": "Front Door SKU. Premium enables managed WAF rulesets (DRS + Bot); Standard supports custom rules + platform DDoS only."
+      }
+    },
+    "mcpAccessKey": {
+      "type": "securestring",
+      "minLength": 32,
+      "metadata": {
+        "description": "MCP application key to store in Key Vault (same value as the container app mcp-access-key secret)"
+      }
+    }
+  },
+  "variables": {
+    "afdProfileName": "[format('{0}-afd', parameters('prefix'))]",
+    "afdEndpointName": "[parameters('prefix')]",
+    "afdOriginGroupName": "mcp-origin-group",
+    "afdOriginName": "mcp-origin",
+    "afdRouteName": "mcp-route",
+    "wafPolicyName": "[replace(format('{0}waf', parameters('prefix')), '-', '')]",
+    "securityPolicyName": "mcp-security-policy",
+    "kvName": "[take(format('{0}kv{1}', replace(parameters('prefix'), '-', ''), uniqueString(resourceGroup().id)), 24)]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.KeyVault/vaults",
+      "apiVersion": "2023-07-01",
+      "name": "[variables('kvName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "sku": {
+          "family": "A",
+          "name": "standard"
+        },
+        "tenantId": "[subscription().tenantId]",
+        "enableRbacAuthorization": true,
+        "enableSoftDelete": true,
+        "softDeleteRetentionInDays": 7,
+        "enablePurgeProtection": true,
+        "publicNetworkAccess": "Enabled"
+      }
+    },
+    {
+      "type": "Microsoft.KeyVault/vaults/secrets",
+      "apiVersion": "2023-07-01",
+      "name": "[format('{0}/{1}', variables('kvName'), 'mcp-access-key')]",
+      "properties": {
+        "value": "[parameters('mcpAccessKey')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.KeyVault/vaults', variables('kvName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[format('Microsoft.KeyVault/vaults/{0}', variables('kvName'))]",
+      "name": "[guid(resourceId('Microsoft.KeyVault/vaults', variables('kvName')), resourceId('Microsoft.App/containerApps', parameters('mcpAppName')), 'kv-secrets-user')]",
+      "properties": {
+        "principalId": "[reference(resourceId('Microsoft.App/containerApps', parameters('mcpAppName')), '2024-03-01', 'full').identity.principalId]",
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.KeyVault/vaults', variables('kvName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Network/FrontDoorWebApplicationFirewallPolicies",
+      "apiVersion": "2022-05-01",
+      "name": "[variables('wafPolicyName')]",
+      "location": "Global",
+      "sku": {
+        "name": "[parameters('frontDoorSku')]"
+      },
+      "properties": {
+        "policySettings": {
+          "enabledState": "Enabled",
+          "mode": "Prevention"
+        },
+        "managedRules": "[if(equals(parameters('frontDoorSku'), 'Premium_AzureFrontDoor'), createObject('managedRuleSets', createArray(createObject('ruleSetType', 'Microsoft_DefaultRuleSet', 'ruleSetVersion', '2.1', 'ruleSetAction', 'Block'), createObject('ruleSetType', 'Microsoft_BotManagerRuleSet', 'ruleSetVersion', '1.0'))), createObject('managedRuleSets', createArray()))]"
+      }
+    },
+    {
+      "type": "Microsoft.Cdn/profiles",
+      "apiVersion": "2023-05-01",
+      "name": "[variables('afdProfileName')]",
+      "location": "Global",
+      "sku": {
+        "name": "[parameters('frontDoorSku')]"
+      }
+    },
+    {
+      "type": "Microsoft.Cdn/profiles/afdEndpoints",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}', variables('afdProfileName'), variables('afdEndpointName'))]",
+      "location": "Global",
+      "properties": {
+        "enabledState": "Enabled"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Cdn/profiles', variables('afdProfileName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Cdn/profiles/originGroups",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}', variables('afdProfileName'), variables('afdOriginGroupName'))]",
+      "properties": {
+        "loadBalancingSettings": {
+          "sampleSize": 4,
+          "successfulSamplesRequired": 3
+        },
+        "healthProbeSettings": {
+          "probePath": "/",
+          "probeRequestType": "HEAD",
+          "probeProtocol": "Https",
+          "probeIntervalInSeconds": 100
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Cdn/profiles', variables('afdProfileName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Cdn/profiles/originGroups/origins",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}/{2}', variables('afdProfileName'), variables('afdOriginGroupName'), variables('afdOriginName'))]",
+      "properties": {
+        "hostName": "[reference(resourceId('Microsoft.App/containerApps', parameters('mcpAppName')), '2024-03-01').configuration.ingress.fqdn]",
+        "originHostHeader": "[reference(resourceId('Microsoft.App/containerApps', parameters('mcpAppName')), '2024-03-01').configuration.ingress.fqdn]",
+        "httpPort": 80,
+        "httpsPort": 443,
+        "priority": 1,
+        "weight": 1000,
+        "enabledState": "Enabled",
+        "enforceCertificateNameCheck": true
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Cdn/profiles/originGroups', variables('afdProfileName'), variables('afdOriginGroupName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Cdn/profiles/afdEndpoints/routes",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}/{2}', variables('afdProfileName'), variables('afdEndpointName'), variables('afdRouteName'))]",
+      "properties": {
+        "originGroup": {
+          "id": "[resourceId('Microsoft.Cdn/profiles/originGroups', variables('afdProfileName'), variables('afdOriginGroupName'))]"
+        },
+        "supportedProtocols": [
+          "Https"
+        ],
+        "patternsToMatch": [
+          "/*"
+        ],
+        "forwardingProtocol": "HttpsOnly",
+        "httpsRedirect": "Enabled",
+        "linkToDefaultDomain": "Enabled"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Cdn/profiles/afdEndpoints', variables('afdProfileName'), variables('afdEndpointName'))]",
+        "[resourceId('Microsoft.Cdn/profiles/originGroups/origins', variables('afdProfileName'), variables('afdOriginGroupName'), variables('afdOriginName'))]",
+        "[resourceId('Microsoft.Cdn/profiles/originGroups', variables('afdProfileName'), variables('afdOriginGroupName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Cdn/profiles/securityPolicies",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}', variables('afdProfileName'), variables('securityPolicyName'))]",
+      "properties": {
+        "parameters": {
+          "type": "WebApplicationFirewall",
+          "wafPolicy": {
+            "id": "[resourceId('Microsoft.Network/FrontDoorWebApplicationFirewallPolicies', variables('wafPolicyName'))]"
+          },
+          "associations": [
+            {
+              "domains": [
+                {
+                  "id": "[resourceId('Microsoft.Cdn/profiles/afdEndpoints', variables('afdProfileName'), variables('afdEndpointName'))]"
+                }
+              ],
+              "patternsToMatch": [
+                "/*"
+              ]
+            }
+          ]
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Cdn/profiles/afdEndpoints', variables('afdProfileName'), variables('afdEndpointName'))]",
+        "[resourceId('Microsoft.Cdn/profiles', variables('afdProfileName'))]",
+        "[resourceId('Microsoft.Network/FrontDoorWebApplicationFirewallPolicies', variables('wafPolicyName'))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "frontDoorHostName": {
+      "type": "string",
+      "metadata": {
+        "description": "Public Front Door endpoint host name — the new MCP server URL. Point consumers here."
+      },
+      "value": "[reference(resourceId('Microsoft.Cdn/profiles/afdEndpoints', variables('afdProfileName'), variables('afdEndpointName')), '2023-05-01').hostName]"
+    },
+    "frontDoorEndpoint": {
+      "type": "string",
+      "metadata": {
+        "description": "Front Door endpoint URL"
+      },
+      "value": "[format('https://{0}/', reference(resourceId('Microsoft.Cdn/profiles/afdEndpoints', variables('afdProfileName'), variables('afdEndpointName')), '2023-05-01').hostName)]"
+    },
+    "frontDoorId": {
+      "type": "string",
+      "metadata": {
+        "description": "Front Door ID (X-Azure-FDID). Set as MCP_FRONTDOOR_ID on the container to reject non-Front-Door traffic."
+      },
+      "value": "[reference(resourceId('Microsoft.Cdn/profiles', variables('afdProfileName')), '2023-05-01').frontDoorId]"
+    },
+    "keyVaultUri": {
+      "type": "string",
+      "metadata": {
+        "description": "Key Vault URI (for ACA Key Vault secret references)"
+      },
+      "value": "[reference(resourceId('Microsoft.KeyVault/vaults', variables('kvName')), '2023-07-01').vaultUri]"
+    }
+  }
+}

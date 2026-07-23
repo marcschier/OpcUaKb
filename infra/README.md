@@ -2,6 +2,11 @@
 
 All Azure resources are defined in [`main.bicep`](main.bicep) and deployed via [`deploy.sh`](deploy.sh).
 
+The optional **secure edge** — Azure Front Door + WAF + Key Vault — is a standalone
+template, [`edge.bicep`](edge.bicep), deployed independently of the main stack. See
+[`../SECURITY.md`](../SECURITY.md) for the MCP security-baseline compliance matrix, the
+opt-in `MCP_AUTH_MODE=entra` Entra ID auth, and the enablement / cutover steps.
+
 ## Azure Resources
 
 | Resource | Derived Name | Purpose |
