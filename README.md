@@ -5,8 +5,8 @@
 [![Build](https://github.com/marcschier/OpcUaKb/actions/workflows/ci.yml/badge.svg)](https://github.com/marcschier/OpcUaKb/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![.NET 10](https://img.shields.io/badge/.NET-10.0-purple)](https://dotnet.microsoft.com/download/dotnet/10.0)
-[![MCP](https://img.shields.io/badge/MCP-1.2-green)](https://modelcontextprotocol.io)
-[![Version](https://img.shields.io/badge/version-4.2-orange)](version.json)
+[![MCP](https://img.shields.io/badge/MCP-1.4-green)](https://modelcontextprotocol.io)
+[![Version](https://img.shields.io/badge/version-5.0-orange)](version.json)
 
 <br clear="left"/>
 
@@ -16,7 +16,7 @@ An Azure AI Search agentic retrieval pipeline that exposes the complete OPC UA r
 
 🌐 **Comprehensive OPC UA coverage** — Over 180,000 indexed documents spanning the entire OPC Foundation reference library: specification text, tables, diagrams, and NodeSet XML definitions. Instead of manually searching across dozens of spec PDFs and web pages, your AI agent can query the full corpus in seconds.
 
-🔧 **11 purpose-built MCP tools** — RAG Q&A, structured search, compliance validation, version comparison, and information model design suggestions — all accessible via a single MCP endpoint. AI agents can ask natural language questions, find specific ObjectTypes, check a NodeSet against a companion spec, or get help designing a new information model without leaving their workflow.
+🔧 **17 purpose-built MCP tools** — RAG Q&A, structured search, compliance validation, version comparison, information model design suggestions, profile-graph conformance, and asynchronous live-server → companion-spec projection — all accessible via a single MCP endpoint. AI agents can ask natural language questions, find specific ObjectTypes, check a NodeSet against a companion spec, or get help designing a new information model without leaving their workflow.
 
 🏢 **Microsoft 365 Copilot agent** — Use the Knowledge Base directly from Microsoft Teams and Microsoft 365 Copilot Chat. The hosted agent in [`src/OpcUaKb.HostedAgent/`](src/OpcUaKb.HostedAgent/) is a **Foundry Hosted Agent** using the **Responses protocol** + the **Microsoft Agent Framework**. It connects directly to the `OpcUaKb.McpServer` via `ModelContextProtocol.Client`, so each of the 17 MCP tools is a distinct AIFunction the model can call by name.
 
@@ -28,7 +28,9 @@ An Azure AI Search agentic retrieval pipeline that exposes the complete OPC UA r
 
 🧠 **RAG knowledge base** — Azure AI Foundry with GPT-4o provides natural-language query planning and answer synthesis. Ask a question in plain English and get a grounded answer with references to specific specification sections — useful for both newcomers learning OPC UA and experts looking up details quickly.
 
-🔒 **Keyless authentication** — The entire stack uses Managed Identity for Azure OpenAI access. No API keys to rotate or leak — the pipeline, MCP server, and chat client all authenticate automatically via `DefaultAzureCredential`.
+🔒 **Keyless authentication** — The entire stack uses Managed Identity for Azure OpenAI and Storage access. No connection strings to rotate or leak — the pipeline, MCP server, and mapping worker all authenticate automatically via `DefaultAzureCredential` (storage is MI-only, `allowSharedKeyAccess: false`).
+
+🛡️ **Secure-MCP-baseline ready** — Ships **secure-by-default-capable but non-breaking**. An opt-in `MCP_AUTH_MODE=entra` turns on Entra ID bearer authentication (RFC 9728 Protected Resource Metadata + audience-validated tokens, no passthrough), and an optional Azure **Front Door + WAF + Key Vault** edge (`infra/edge.bicep`) provides DDoS mitigation and traffic normalization. The default `apikey` mode preserves existing anonymous + api-key behaviour. See [`SECURITY.md`](SECURITY.md).
 
 📈 **Popularity-boosted ranking** — Search results are ranked using a scoring profile that combines text relevance with adoption signals. OPC Foundation specs receive baseline priority; CloudLibrary entries are boosted by their download count on a logarithmic scale, so widely-adopted NodeSets like DI, Machinery, and PackML naturally surface first.
 
@@ -234,6 +236,10 @@ https://<mcp-server-fqdn>/
 | Blocked | `MCP_REQUIRE_AUTH=true` | 401 Unauthorized |
 
 All tool calls — including `create_companion_projection` — follow the tier table above: they work anonymously unless `MCP_REQUIRE_AUTH=true`. The HTTP write endpoints `POST /upload-nodeset` and `GET /mapping-artifacts/...` always require the `api-key` header (upload/artifact keys), independent of the anonymous tier.
+
+### 🛡️ Hardened (Entra ID) mode
+
+The default `MCP_AUTH_MODE=apikey` behaviour above is unchanged. Setting `MCP_AUTH_MODE=entra` switches the server to **Entra ID bearer authentication** — every request except discovery (`/.well-known/*`) must present a valid token **issued for this server** (audience-validated, no passthrough), optionally gated on a required `scp`. The server publishes RFC 9728 Protected Resource Metadata and challenges with `WWW-Authenticate`. An optional `MCP_FRONTDOOR_ID` locks ingress so only requests arriving through the approved Front Door edge are accepted. Full compliance matrix, env vars, Entra app registration, and non-breaking cutover order are in [`SECURITY.md`](SECURITY.md); the edge (Front Door + WAF + Key Vault) is deployed via [`infra/edge.bicep`](infra/edge.bicep).
 
 ## 🤖 Microsoft 365 Copilot Agent
 
