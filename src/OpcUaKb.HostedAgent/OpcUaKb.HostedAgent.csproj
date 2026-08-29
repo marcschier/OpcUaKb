@@ -18,7 +18,7 @@
     <!-- MCP client — connects directly to our OpcUaKb.McpServer over SSE so each of the
          11 tools (search_docs, list_specs, ...) is exposed as a distinct AIFunction
          that GPT-4o can call by name. -->
-    <PackageReference Include="ModelContextProtocol" Version="1.4.1" />
+    <PackageReference Include="ModelContextProtocol" Version="2.2.0" />
     <!-- .env file support for local development. -->
     <PackageReference Include="DotNetEnv" Version="3.2.0" />
   </ItemGroup>
